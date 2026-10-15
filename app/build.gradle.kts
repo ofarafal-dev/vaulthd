@@ -8,7 +8,7 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
-    packaging { resources { excludes += setOf("META-INF/*.md", "META-INF/INDEX.LIST", "META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*", "META-INF/versions/9/OSGI-INF/MANIFEST.MF") } }
+    packaging { resources { excludes += setOf("META-INF/*.md", "META-INF/DISCLAIMER", "/META-INF/DISCLAIMER", "META-INF/INDEX.LIST", "META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*", "META-INF/versions/9/OSGI-INF/MANIFEST.MF") } }
 }
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
@@ -18,5 +18,5 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.0")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.fragment:fragment-ktx:1.8.0")
-    implementation("org.web3j:core:4.9.8-android")
+    implementation("org.web3j:core:4.12.0")
 }
