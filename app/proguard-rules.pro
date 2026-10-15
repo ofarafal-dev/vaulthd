@@ -1,0 +1,5 @@
+-keep class org.web3j.** { *; }
+-keep class org.bouncycastle.** { *; }
+-dontwarn org.slf4j.**
+-dontwarn java.lang.invoke.**
+-dontwarn org.web3j.**
