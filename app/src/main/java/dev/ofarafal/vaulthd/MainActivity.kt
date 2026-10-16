@@ -51,25 +51,24 @@ import java.math.BigDecimal
 import java.math.BigInteger
 import java.math.RoundingMode
 
-val Accent = Color(0xFF5EEAD4)
-val Bg = Color(0xFF0A0E14)
-val CardBg = Color(0xFF131A24)
-val Muted = Color(0xFF8A97A8)
-val Warn = Color(0xFFFBBF24)
 
 class MainActivity : FragmentActivity() {
     private var stoppedAt = 0L
     override fun onStop() { super.onStop(); stoppedAt = SystemClock.elapsedRealtime() }
     override fun onStart() {
         super.onStart()
-        if (stoppedAt != 0L && SystemClock.elapsedRealtime() - stoppedAt > 30_000) Session.lock()
+        if (stoppedAt != 0L && SystemClock.elapsedRealtime() - stoppedAt > Prefs.lockSec * 1000L) Session.lock()
     }
     override fun onCreate(s: Bundle?) {
         super.onCreate(s)
+        Prefs.init(this)
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        Theme.sysDark = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(primary = Accent, onPrimary = Color.Black, background = Bg,
-                surface = Bg, surfaceVariant = CardBg, onSurface = Color(0xFFE6EDF5), tertiary = Warn)) {
+            val sys = androidx.compose.foundation.isSystemInDarkTheme()
+            SideEffect { Theme.sysDark = sys }
+            AppTheme {
                 Surface(Modifier.fillMaxSize(), color = Bg) { App(this) }
             }
         }
@@ -123,32 +122,17 @@ fun App(act: FragmentActivity) {
     var has by remember { mutableStateOf(Vault.exists(act)) }
     var addrs by remember { mutableStateOf(Vault.addresses(act)) }
     var msg by remember { mutableStateOf("") }
-    var confirmWipe by remember { mutableStateOf(false) }
-    var confirmDisguise by remember { mutableStateOf(false) }
-    var disguised by remember { mutableStateOf(isDisguised(act)) }
-    var menu by remember { mutableStateOf(false) }
     var askBio by remember { mutableStateOf(false) }
     var bioOn by remember { mutableStateOf(Vault.bioEnabled(act)) }
-    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
+    var tab by remember { mutableIntStateOf(0) }
+    val ready = has && Session.unlocked
+    Column(Modifier.fillMaxSize().padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("VaultHD", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+            Text("VaultHD", fontSize = 24.sp, fontWeight = FontWeight.Bold)
             Text("  EVM", color = Accent, fontSize = 12.sp)
-            if (has) {
+            if (ready) {
                 Spacer(Modifier.weight(1f))
-                Box {
-                    TextButton(onClick = { menu = true }) { Text("⋮", color = Muted, fontSize = 22.sp) }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        if (Session.unlocked && Vault.bioAvailable(act)) DropdownMenuItem(
-                            text = { Text(if (bioOn) "Wyłącz odblokowanie odciskiem" else "Włącz odblokowanie odciskiem") },
-                            onClick = {
-                                menu = false
-                                if (bioOn) { Vault.bioDisable(act); bioOn = false; msg = "Odblokowanie odciskiem wyłączone" } else askBio = true
-                            })
-                        DropdownMenuItem(text = { Text(if (disguised) "Pokaż ikonę VaultHD" else "Ukryj ikonę") },
-                            onClick = { menu = false; confirmDisguise = true })
-                        DropdownMenuItem(text = { Text("Zmień seed") }, onClick = { menu = false; confirmWipe = true })
-                    }
-                }
+                IconButton(onClick = { tab = 2 }) { Ico("sliders", if (tab == 2) Accent else Muted) }
             }
         }
         if (askBio) AlertDialog(onDismissRequest = { askBio = false; Vault.markBioAsked(act) },
@@ -159,18 +143,6 @@ fun App(act: FragmentActivity) {
                 Vault.bioEnroll(act, Session.pw ?: CharArray(0), { bioOn = true; msg = "Odblokowanie odciskiem włączone" }, { msg = it })
             }) { Text("Włącz") } },
             dismissButton = { TextButton(onClick = { askBio = false; Vault.markBioAsked(act) }) { Text("Nie teraz") } })
-        if (confirmDisguise) AlertDialog(onDismissRequest = { confirmDisguise = false },
-            title = { Text(if (disguised) "Pokazać ikonę VaultHD?" else "Ukryć aplikację?") },
-            text = { Text(if (disguised) "W launcherze znów pojawi się ikona VaultHD." else "W launcherze aplikacja będzie wyglądać jak „Notatnik” (inna ikona i nazwa). Zmiana może chwilowo zamknąć apkę - uruchom ją ponownie z ikony Notatnika.") },
-            confirmButton = { Button(onClick = { disguised = !disguised; setDisguise(act, disguised); confirmDisguise = false }) { Text("OK") } },
-            dismissButton = { TextButton(onClick = { confirmDisguise = false }) { Text("Anuluj") } })
-        if (confirmWipe) AlertDialog(onDismissRequest = { confirmWipe = false },
-            title = { Text("Usunąć portfel z tego telefonu?") },
-            text = { Text("Zaszyfrowany seed zostanie skasowany. Bez zapisanego seeda (12 słów) stracisz dostęp do środków. Potem wkleisz własny seed lub wygenerujesz nowy.") },
-            confirmButton = { Button(onClick = {
-                Vault.wipe(act); Session.lock(); bioOn = false; has = false; addrs = emptyList(); confirmWipe = false; msg = ""
-            }) { Text("Usuń") } },
-            dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("Anuluj") } })
         if (msg.isNotEmpty()) {
             Card(Modifier.fillMaxWidth().padding(top = 8.dp).clickable { msg = "" }, shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = CardBg)) {
@@ -178,10 +150,22 @@ fun App(act: FragmentActivity) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        if (!has) Setup(act, { c -> Session.pw = c; Session.unlocked = true; has = true; addrs = Vault.addresses(act); msg = ""; askBio = Vault.bioAvailable(act) && !Vault.bioAsked(act) }, { msg = it })
-        else if (!Session.unlocked) LockScreen(act, { c, viaBio -> Session.pw = c; Session.unlocked = true; msg = ""
-            if (!viaBio) askBio = Vault.bioAvailable(act) && !Vault.bioAsked(act) && !Vault.bioEnabled(act) }, { msg = it })
-        else Main(act, addrs) { msg = it }
+        Box(Modifier.weight(1f)) {
+            if (!has) Setup(act, { c -> Session.pw = c; Session.unlocked = true; has = true; addrs = Vault.addresses(act); msg = ""; askBio = Vault.bioAvailable(act) && !Vault.bioAsked(act) }, { msg = it })
+            else if (!Session.unlocked) LockScreen(act, { c, viaBio -> Session.pw = c; Session.unlocked = true; msg = ""
+                if (!viaBio) askBio = Vault.bioAvailable(act) && !Vault.bioAsked(act) && !Vault.bioEnabled(act) }, { msg = it })
+            else {
+                // Portfel zostaje w kompozycji (stan i salda nie giną przy zmianie zakładki)
+                Box(if (tab == 0) Modifier.fillMaxSize() else Modifier.size(0.dp)) { Main(act, addrs) { msg = it } }
+                if (tab == 1) ActivityScreen(act, addrs)
+                if (tab == 2) SettingsScreen(act, addrs, bioOn,
+                    { on -> if (on) askBio = true else { Vault.bioDisable(act); bioOn = false; msg = "Odblokowanie odciskiem wyłączone" } },
+                    { bioOn = false },
+                    { Vault.wipe(act); Session.lock(); bioOn = false; has = false; addrs = emptyList(); msg = ""; tab = 0 },
+                    { tab = 0; Shared.openAdd = true }, { msg = it })
+            }
+        }
+        if (ready) BottomNav(tab) { tab = it }
     }
 }
 
@@ -310,6 +294,8 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
     var showAdd by remember { mutableStateOf(false) }
     var showSweep by remember { mutableStateOf(false) }
     var job by remember { mutableStateOf<Job?>(null) }
+    var expanded by remember { mutableStateOf(setOf<Int>()) }
+    var sortByValue by remember { mutableStateOf(true) }
 
     fun refresh() {
         job?.cancel()
@@ -384,18 +370,27 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
         return s
     }
     val held = tokens.filter { t -> addrs.any { (tb[t.address]?.get(it)?.signum() ?: 0) > 0 } }
-    val visible = addrs.indices.filter { !hideEmpty || hasAny(addrs[it]) }
+    val visible = addrs.indices.filter { idx ->
+        val a = addrs[idx]
+        (!hideEmpty || hasAny(a)) && (Prefs.hideBelow <= 0 || prices.isEmpty() || (addrUsd(a) ?: 0.0) >= Prefs.hideBelow)
+    }.let { l -> if (sortByValue && prices.isNotEmpty()) l.sortedByDescending { addrUsd(addrs[it]) ?: 0.0 } else l }
+    LaunchedEffect(native, tb, net) { Shared.net = net; Shared.held = addrs.indices.filter { hasAny(addrs[it]) } }
+    LaunchedEffect(Shared.openAdd) { if (Shared.openAdd) { showAdd = true; Shared.openAdd = false } }
     val total = if (prices.isEmpty()) null else addrs.sumOf { addrUsd(it) ?: 0.0 }
 
+    val total = if (prices.isEmpty()) null else addrs.sumOf { addrUsd(it) ?: 0.0 }
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            nets.forEachIndexed { i, n -> FilterChip(selected = net == n, onClick = { ni = i }, label = { Text(n.name) }) }
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            nets.forEachIndexed { i, n -> NetChip(net == n, n.name) { ni = i } }
         }
-        Spacer(Modifier.height(8.dp))
-        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = CardBg)) {
-            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("${net.name} · ${held.size} z ${tokens.size} tokenów", fontWeight = FontWeight.SemiBold)
-                total?.let { Text(usdStr(it), fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Accent) }
+        Spacer(Modifier.height(10.dp))
+        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = CardBg)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Portfel · ${net.name}", color = Muted, fontSize = 12.sp)
+                Text(if (total != null) usdStr(total) else if (loading) "…" else "—", fontSize = 32.sp,
+                    fontWeight = FontWeight.Medium, color = Tx)
+                Text("${held.size} z ${tokens.size} tokenów ma saldo", color = Muted, fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { refresh() }, enabled = !loading) { Text(if (loading) "Ładuję…" else "Odśwież") }
                     OutlinedButton(onClick = { showSweep = true }) { Text("Zbierz środki") }
@@ -409,39 +404,60 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = hideEmpty, onCheckedChange = { hideEmpty = it })
-                    Text("  Tylko adresy z saldem", fontSize = 13.sp, color = Muted)
+                    Text("  Tylko z saldem", fontSize = 13.sp, color = Muted)
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { sortByValue = !sortByValue }) {
+                        Text(if (sortByValue) "Sortuj: wartość" else "Sortuj: numer", fontSize = 12.sp)
+                    }
                 }
             }
         }
         Spacer(Modifier.height(8.dp))
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(visible) { i ->
+            items(visible, key = { it }) { i ->
                 val a = addrs[i]
-                Card(Modifier.fillMaxWidth().clickable { from = i }, shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = CardBg)) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(30.dp).background(Accent.copy(alpha = 0.15f), CircleShape), contentAlignment = Alignment.Center) {
+                val open = i in expanded
+                val nv = native[a]
+                val syms = buildList {
+                    if ((nv?.signum() ?: 0) > 0) add(net.sym)
+                    tokens.forEach { t -> if ((tb[t.address]?.get(a)?.signum() ?: 0) > 0) add(t.symbol) }
+                }
+                Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = CardBg)) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(Modifier.fillMaxWidth().clickable { expanded = if (open) expanded - i else expanded + i },
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(30.dp).background(Accent.copy(alpha = 0.16f), CircleShape), contentAlignment = Alignment.Center) {
                                 Text("${i + 1}", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
-                            Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                            Column(Modifier.weight(1f).padding(start = 10.dp)) {
                                 Text("${a.take(8)}…${a.takeLast(6)}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                                addrUsd(a)?.let { Text(usdStr(it), color = Muted, fontSize = 11.sp) }
+                                Text(if (nv == null) "…" else if (syms.isEmpty()) "brak sald"
+                                    else syms.take(4).joinToString(" · ") + (if (syms.size > 4) " +${syms.size - 4}" else ""),
+                                    color = Muted, fontSize = 11.sp)
                             }
-                            TextButton(onClick = { hist = i }) { Text("Hist.") }
-                            TextButton(onClick = {
-                                act.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("addr", a))
-                                say("Skopiowano adres #${i + 1}")
-                            }) { Text("Kopiuj") }
+                            addrUsd(a)?.let { Text(usdStr(it), fontSize = 13.sp, color = Tx) }
+                            Spacer(Modifier.width(8.dp))
+                            Ico("chev", Muted, 16.dp, if (open) 180f else 0f)
                         }
-                        val nv = native[a]
-                        AssetRow(net.sym, nv?.let { fmtTok(it, 18) } ?: "…", (nv?.signum() ?: 0) == 0,
-                            nv?.let { v -> prices["native"]?.let { toD(v, 18) * it } })
-                        tokens.forEach { t ->
-                            val v = tb[t.address]?.get(a)
-                            val zero = (v?.signum() ?: 0) == 0
-                            if (!zero) AssetRow(t.symbol, v?.let { fmtTok(it, t.decimals) } ?: "…", zero,
-                                v?.let { x -> prices[t.address]?.let { toD(x, t.decimals) * it } })
+                        if (open) {
+                            Spacer(Modifier.height(8.dp))
+                            AssetRow(net.sym, nv?.let { fmtTok(it, 18) } ?: "…", (nv?.signum() ?: 0) == 0,
+                                nv?.let { v -> prices["native"]?.let { toD(v, 18) * it } })
+                            tokens.forEach { t ->
+                                val v = tb[t.address]?.get(a)
+                                val zero = (v?.signum() ?: 0) == 0
+                                if (!zero) AssetRow(t.symbol, v?.let { fmtTok(it, t.decimals) } ?: "…", zero,
+                                    v?.let { x -> prices[t.address]?.let { toD(x, t.decimals) * it } })
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = { from = i }, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)) { Text("Wyślij") }
+                                OutlinedButton(onClick = { hist = i }, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)) { Text("Historia") }
+                                OutlinedButton(onClick = {
+                                    act.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("addr", a))
+                                    say("Skopiowano adres #${i + 1}")
+                                }, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)) { Text("Kopiuj") }
+                            }
                         }
                     }
                 }
@@ -456,11 +472,11 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
 
 @Composable
 fun AssetRow(sym: String, amount: String, dim: Boolean, usd: Double?) {
-    Row(Modifier.fillMaxWidth().padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(sym, fontWeight = FontWeight.Medium, color = if (dim) Muted else Color.White, fontSize = 14.sp)
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(sym, fontWeight = FontWeight.Medium, color = if (dim) Muted else Tx, fontSize = 14.sp)
         Spacer(Modifier.weight(1f))
         if (usd != null && !dim) Text(usdStr(usd) + "  ", color = Muted, fontSize = 12.sp)
-        Text(amount, color = if (dim) Muted else Accent, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
+        Text(amount, color = if (dim) Muted else Accent2, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
     }
 }
 
@@ -487,7 +503,7 @@ fun HistoryDialog(act: FragmentActivity, net: Net, addr: String, onClose: () -> 
                             Text("${h.peer.take(8)}…${h.peer.takeLast(4)} · ${h.ts.take(16).replace('T', ' ')}", color = Muted, fontSize = 11.sp)
                         }
                         Text("${if (h.out) "-" else "+"}${h.amount} ${h.sym}", fontFamily = FontFamily.Monospace, fontSize = 12.sp,
-                            color = if (h.out) Color.White else Accent)
+                            color = if (h.out) Tx else Accent)
                     }
                 }
             }
@@ -531,7 +547,7 @@ fun SweepDialog(act: FragmentActivity, net: Net, addrs: List<String>, tokens: Li
                     if (list.isEmpty()) Text("Brak adresów z saldem tego aktywa.", color = Muted, fontSize = 12.sp)
                     list.forEach {
                         Text(if (it.note == null) "#${it.idx + 1} → ${fmtTok(it.amount, dec)} $sym" else "#${it.idx + 1} pominięty: ${it.note}",
-                            fontSize = 12.sp, color = if (it.note == null) Color.White else Muted)
+                            fontSize = 12.sp, color = if (it.note == null) Tx else Muted)
                     }
                     if (ok.isNotEmpty()) Text("Razem: ${fmtTok(ok.fold(BigInteger.ZERO) { a, b -> a + b.amount }, dec)} $sym z ${ok.size} adresów\nDo: $dest" + (gp?.let { g -> "\nCena gazu (maks.): ${BigDecimal(g.maxFee).movePointLeft(9).setScale(1, RoundingMode.UP)} gwei · łączna opłata maks.: ${fmtTok(ok.fold(BigInteger.ZERO) { a, b -> a + b.gas.multiply(g.maxFee) }, 18)} ${net.sym}" } ?: ""),
                         color = Warn, fontSize = 12.sp)

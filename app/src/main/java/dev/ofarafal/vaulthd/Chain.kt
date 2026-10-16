@@ -76,7 +76,7 @@ object Multi {
 }
 
 object Chain {
-    private fun w3(n: Net) = Web3j.build(HttpService(n.rpc))
+    private fun w3(n: Net) = Web3j.build(HttpService(Prefs.rpcFor(n)))
     private fun pad(h: String) = h.removePrefix("0x").lowercase().padStart(64, '0')
     private fun call(w: Web3j, from: String?, to: String, data: String): String? =
         w.ethCall(Transaction.createEthCallTransaction(from, to, data), DefaultBlockParameterName.LATEST).send().value
@@ -156,10 +156,12 @@ object Chain {
         val gp = w.ethGasPrice().send().gasPrice
         val tip = runCatching { w.ethMaxPriorityFeePerGas().send().maxPriorityFeePerGas }
             .getOrDefault(BigInteger.valueOf(1_000_000_000L))
-        val maxFee = gp.multiply(BigInteger.valueOf(2)).max(tip)
+        val sp = Prefs.feeSpeed.coerceIn(0, 2)
+        val tipS = tip.multiply(BigInteger.valueOf(listOf(80L, 100L, 150L)[sp])).divide(BigInteger.valueOf(100))
+        val maxFee = gp.multiply(BigInteger.valueOf(listOf(125L, 200L, 300L)[sp])).divide(BigInteger.valueOf(100)).max(tipS)
         if (maxFee > BigInteger.valueOf(1_000_000_000_000L)) // 1000 gwei
             throw RuntimeException("Podejrzanie wysoka cena gazu z RPC - przerwano")
-        return Gas(tip, maxFee)
+        return Gas(tipS, maxFee)
     }
 
     fun estimate(n: Net, from: String, t: Token?, to: String, amount: BigInteger): BigInteger {
