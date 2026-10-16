@@ -17,7 +17,7 @@ jobs:
           gradle assembleDebug --no-daemon --console=plain > build.log 2>&1
           code=$?
           if [ $code -ne 0 ]; then
-            msg=$(grep -E "^e: |error:|What went wrong|Could not|Caused by|FAILED|^> " build.log | head -40 | cut -c1-300)
+            msg=$(grep -E "^e: |error:|What went wrong|Could not|Caused by" build.log | head -30 | cut -c1-260)
             msg="${msg//$'\n'/%0A}"
             echo "::error title=BUILD_ERRORS::$msg"
           fi
