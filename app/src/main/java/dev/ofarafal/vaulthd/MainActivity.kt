@@ -75,11 +75,23 @@ fun App(act: FragmentActivity) {
     var has by remember { mutableStateOf(Vault.exists(act)) }
     var addrs by remember { mutableStateOf(Vault.addresses(act)) }
     var msg by remember { mutableStateOf("") }
+    var confirmWipe by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("VaultHD", fontSize = 26.sp, fontWeight = FontWeight.Bold)
             Text("  EVM · ${Wallet.COUNT} adresów", color = Accent, fontSize = 12.sp)
+            if (has) {
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { confirmWipe = true }) { Text("Zmień seed", color = Muted, fontSize = 12.sp) }
+            }
         }
+        if (confirmWipe) AlertDialog(onDismissRequest = { confirmWipe = false },
+            title = { Text("Usunąć portfel z tego telefonu?") },
+            text = { Text("Zaszyfrowany seed zostanie skasowany. Bez zapisanego seeda (12 słów) stracisz dostęp do środków. Potem wkleisz własny seed lub wygenerujesz nowy.") },
+            confirmButton = { Button(onClick = {
+                Vault.wipe(act); has = false; addrs = emptyList(); confirmWipe = false; msg = ""
+            }) { Text("Usuń") } },
+            dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("Anuluj") } })
         if (msg.isNotEmpty()) {
             Card(Modifier.fillMaxWidth().padding(top = 8.dp).clickable { msg = "" }, shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = CardBg)) {

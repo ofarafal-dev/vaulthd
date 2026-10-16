@@ -23,6 +23,11 @@ object Vault {
     private const val ADDR = "addresses.txt"
     private const val SEP = "\u0000"
 
+    fun wipe(c: Context) {
+        File(c.filesDir, FILE).delete(); File(c.filesDir, ADDR).delete()
+        runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(ALIAS) }
+    }
+
     fun exists(c: Context) = File(c.filesDir, FILE).exists()
     fun addresses(c: Context): List<String> =
         File(c.filesDir, ADDR).takeIf { it.exists() }?.readLines()?.filter { it.isNotBlank() } ?: emptyList()
