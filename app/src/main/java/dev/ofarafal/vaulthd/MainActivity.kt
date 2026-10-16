@@ -39,6 +39,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.web3j.crypto.Keys
 import org.web3j.crypto.MnemonicUtils
 import org.web3j.crypto.WalletUtils
 import java.math.BigDecimal
@@ -67,6 +68,7 @@ class MainActivity : FragmentActivity() {
                 Surface(Modifier.fillMaxSize(), color = Bg) { App(this) }
             }
         }
+        window.decorView.filterTouchesWhenObscured = true // ochrona przed nakładkami (tapjacking)
     }
 }
 
@@ -77,6 +79,16 @@ fun fmtTok(v: BigInteger, dec: Int): String {
 fun toD(v: BigInteger, dec: Int): Double = BigDecimal(v).movePointLeft(dec).toDouble()
 fun usdStr(x: Double?): String = if (x == null) "" else if (x < 0.01 && x > 0) "<\$0.01" else String.format("\$%.2f", x)
 fun openUrl(act: FragmentActivity, url: String) = act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+fun checkAddr(a: String, tok: Token? = null): String? {
+    val t = a.trim()
+    if (!WalletUtils.isValidAddress(t)) return "Nieprawidłowy adres"
+    val body = t.removePrefix("0x")
+    if (body.any { it.isUpperCase() } && body.any { it.isLowerCase() } && Keys.toChecksumAddress(t) != "0x$body")
+        return "Zła suma kontrolna adresu (literówka?)"
+    if (body.all { it == '0' }) return "Adres zerowy - środki przepadną"
+    if (tok != null && body.equals(tok.address.removePrefix("0x"), true)) return "To adres kontraktu tokena - tokeny przepadną"
+    return null
+}
 fun parseAmt(s: String, dec: Int): BigInteger =
     BigDecimal(s.trim().replace(',', '.')).movePointRight(dec).toBigIntegerExact()
 
@@ -440,7 +452,7 @@ fun SweepDialog(act: FragmentActivity, net: Net, addrs: List<String>, tokens: Li
                         Text(if (it.note == null) "#${it.idx + 1} → ${fmtTok(it.amount, dec)} $sym" else "#${it.idx + 1} pominięty: ${it.note}",
                             fontSize = 12.sp, color = if (it.note == null) Color.White else Muted)
                     }
-                    if (ok.isNotEmpty()) Text("Razem: ${fmtTok(ok.fold(BigInteger.ZERO) { a, b -> a + b.amount }, dec)} $sym z ${ok.size} adresów\nDo: $dest",
+                    if (ok.isNotEmpty()) Text("Razem: ${fmtTok(ok.fold(BigInteger.ZERO) { a, b -> a + b.amount }, dec)} $sym z ${ok.size} adresów\nDo: $dest" + (gp?.let { g -> "\nCena gazu (maks.): ${BigDecimal(g.maxFee).movePointLeft(9).setScale(1, RoundingMode.UP)} gwei · łączna opłata maks.: ${fmtTok(ok.fold(BigInteger.ZERO) { a, b -> a + b.gas.multiply(g.maxFee) }, 18)} ${net.sym}" } ?: ""),
                         color = Warn, fontSize = 12.sp)
                 }
                 log.forEach { Text(it, fontSize = 12.sp, fontFamily = FontFamily.Monospace) }
@@ -450,7 +462,7 @@ fun SweepDialog(act: FragmentActivity, net: Net, addrs: List<String>, tokens: Li
             Button(enabled = !busy && !running, onClick = {
                 val list = items
                 if (list == null) {
-                    if (!WalletUtils.isValidAddress(dest.trim())) { say("Nieprawidłowy adres docelowy"); return@Button }
+                    checkAddr(dest, tok)?.let { say(it); return@Button }
                     scope.launch {
                         busy = true
                         try {
@@ -579,13 +591,18 @@ fun SendDialog(act: FragmentActivity, idx: Int, addrs: List<String>, net: Net, t
         confirmButton = {
             Button(onClick = {
                 if (fee == null) {
-                    if (!WalletUtils.isValidAddress(to.trim())) { say("Nieprawidłowy adres"); return@Button }
+                    checkAddr(to, tok)?.let { say(it); return@Button }
                     units = try { parseAmt(amt, dec) } catch (e: Exception) { say("Nieprawidłowa kwota"); return@Button }
                     if (units.signum() <= 0) { say("Kwota musi być > 0"); return@Button }
                     if (avail != null && units > avail) { say("Za mało środków"); return@Button }
                     scope.launch {
-                        try { fee = withContext(Dispatchers.IO) { Chain.fee(net, from, tok, to.trim(), units) } }
-                        catch (e: Exception) { say("RPC: ${e.message}") }
+                        try {
+                            val f = withContext(Dispatchers.IO) { Chain.fee(net, from, tok, to.trim(), units) }
+                            val cost = f.maxFee.multiply(f.gas)
+                            if (tok == null && avail != null && units + cost > avail) say("Za mało na kwotę + maks. opłatę")
+                            else if (tok != null && (native[from] ?: BigInteger.ZERO) < cost) say("Brak ${net.sym} na opłatę")
+                            else fee = f
+                        } catch (e: Exception) { say("RPC: ${e.message}") }
                     }
                 } else {
                     Vault.load(act, Session.pw ?: CharArray(0), { mn, pass ->

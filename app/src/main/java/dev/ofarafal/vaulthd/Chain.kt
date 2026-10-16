@@ -102,7 +102,10 @@ object Chain {
         val gp = w.ethGasPrice().send().gasPrice
         val tip = runCatching { w.ethMaxPriorityFeePerGas().send().maxPriorityFeePerGas }
             .getOrDefault(BigInteger.valueOf(1_000_000_000L))
-        return Gas(tip, gp.multiply(BigInteger.valueOf(2)).max(tip))
+        val maxFee = gp.multiply(BigInteger.valueOf(2)).max(tip)
+        if (maxFee > BigInteger.valueOf(1_000_000_000_000L)) // 1000 gwei
+            throw RuntimeException("Podejrzanie wysoka cena gazu z RPC - przerwano")
+        return Gas(tip, maxFee)
     }
 
     fun estimate(n: Net, from: String, t: Token?, to: String, amount: BigInteger): BigInteger {
