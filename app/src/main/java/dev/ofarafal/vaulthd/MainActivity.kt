@@ -378,7 +378,6 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
     LaunchedEffect(Shared.openAdd) { if (Shared.openAdd) { showAdd = true; Shared.openAdd = false } }
     val total = if (prices.isEmpty()) null else addrs.sumOf { addrUsd(it) ?: 0.0 }
 
-    val total = if (prices.isEmpty()) null else addrs.sumOf { addrUsd(it) ?: 0.0 }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             nets.forEachIndexed { i, n -> NetChip(net == n, n.name) { ni = i } }
