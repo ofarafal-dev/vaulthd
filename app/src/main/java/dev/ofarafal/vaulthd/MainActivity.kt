@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -33,6 +34,7 @@ import androidx.fragment.app.FragmentActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.web3j.crypto.MnemonicUtils
@@ -48,6 +50,12 @@ val Muted = Color(0xFF8A97A8)
 val Warn = Color(0xFFFBBF24)
 
 class MainActivity : FragmentActivity() {
+    private var stoppedAt = 0L
+    override fun onStop() { super.onStop(); stoppedAt = SystemClock.elapsedRealtime() }
+    override fun onStart() {
+        super.onStart()
+        if (stoppedAt != 0L && SystemClock.elapsedRealtime() - stoppedAt > 30_000) Session.lock()
+    }
     override fun onCreate(s: Bundle?) {
         super.onCreate(s)
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
@@ -89,7 +97,7 @@ fun App(act: FragmentActivity) {
             title = { Text("Usunąć portfel z tego telefonu?") },
             text = { Text("Zaszyfrowany seed zostanie skasowany. Bez zapisanego seeda (12 słów) stracisz dostęp do środków. Potem wkleisz własny seed lub wygenerujesz nowy.") },
             confirmButton = { Button(onClick = {
-                Vault.wipe(act); has = false; addrs = emptyList(); confirmWipe = false; msg = ""
+                Vault.wipe(act); Session.lock(); has = false; addrs = emptyList(); confirmWipe = false; msg = ""
             }) { Text("Usuń") } },
             dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("Anuluj") } })
         if (msg.isNotEmpty()) {
@@ -99,42 +107,85 @@ fun App(act: FragmentActivity) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        if (!has) Setup(act, { has = true; addrs = Vault.addresses(act); msg = "" }, { msg = it })
+        if (!has) Setup(act, { c -> Session.pw = c; Session.unlocked = true; has = true; addrs = Vault.addresses(act); msg = "" }, { msg = it })
+        else if (!Session.unlocked) LockScreen(act, { c -> Session.pw = c; Session.unlocked = true; msg = "" }, { msg = it })
         else Main(act, addrs) { msg = it }
     }
 }
 
 @Composable
-fun Setup(act: FragmentActivity, onDone: () -> Unit, say: (String) -> Unit) {
+fun Setup(act: FragmentActivity, onDone: (CharArray) -> Unit, say: (String) -> Unit) {
     var mn by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var gen by remember { mutableStateOf(false) }
     var w3 by remember { mutableStateOf("") }
     var w7 by remember { mutableStateOf("") }
+    var p1 by remember { mutableStateOf("") }
+    var p2 by remember { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
     val kb = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrect = false)
     val words = mn.trim().split(Regex("\\s+"))
     val valid = MnemonicUtils.validateMnemonic(mn.trim())
     val quizOk = !gen || (words.size > 6 && w3.trim() == words[2] && w7.trim() == words[6])
-    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = CardBg)) {
+    val pwOk = p1.length >= 8 && p1 == p2
+    Card(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = CardBg)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Nowy portfel", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
             Button(onClick = { mn = Wallet.newMnemonic(); gen = true; w3 = ""; w7 = "" }, Modifier.fillMaxWidth()) {
                 Text("Generuj nowy seed (12 słów)")
             }
             OutlinedTextField(mn, { mn = it; gen = false }, Modifier.fillMaxWidth(),
-                label = { Text("Seed BIP39 (lub wpisz, by zaimportować)") }, keyboardOptions = kb)
+                label = { Text("Seed BIP39 (lub wklej własny, by zaimportować)") }, keyboardOptions = kb)
             OutlinedTextField(pass, { pass = it }, Modifier.fillMaxWidth(),
-                label = { Text("Passphrase (opcjonalnie)") }, keyboardOptions = kb,
+                label = { Text("Passphrase BIP39 (opcjonalnie)") }, keyboardOptions = kb,
                 visualTransformation = PasswordVisualTransformation())
             if (gen) {
                 Text("Zapisz seed OFFLINE na papierze. Potwierdź słowa:", color = Warn, fontSize = 13.sp)
                 OutlinedTextField(w3, { w3 = it }, label = { Text("Słowo #3") }, keyboardOptions = kb)
                 OutlinedTextField(w7, { w7 = it }, label = { Text("Słowo #7") }, keyboardOptions = kb)
             }
-            Button(enabled = valid && quizOk, modifier = Modifier.fillMaxWidth(), onClick = {
-                val m = mn.trim()
-                Vault.save(act, m, pass, Wallet.addresses(m, pass), { mn = ""; w3 = ""; w7 = ""; onDone() }, say)
-            }) { Text("Zapisz w sejfie (biometria)") }
+            Text("Hasło do aplikacji szyfruje seed dodatkowo. Nie da się go odzyskać - przy utracie przywracasz portfel z seeda.",
+                color = Muted, fontSize = 12.sp)
+            OutlinedTextField(p1, { p1 = it }, Modifier.fillMaxWidth(), label = { Text("Hasło do aplikacji (min. 8 znaków)") },
+                keyboardOptions = kb, visualTransformation = PasswordVisualTransformation())
+            OutlinedTextField(p2, { p2 = it }, Modifier.fillMaxWidth(), label = { Text("Powtórz hasło") },
+                keyboardOptions = kb, visualTransformation = PasswordVisualTransformation())
+            Button(enabled = valid && quizOk && pwOk && !saving, modifier = Modifier.fillMaxWidth(), onClick = {
+                val m = mn.trim(); val chars = p1.toCharArray()
+                saving = true
+                Vault.save(act, m, pass, Wallet.addresses(m, pass), chars,
+                    { mn = ""; w3 = ""; w7 = ""; p1 = ""; p2 = ""; saving = false; onDone(chars) },
+                    { saving = false; say(it) })
+            }) { Text(if (saving) "Szyfruję…" else "Zapisz w sejfie (biometria)") }
+        }
+    }
+}
+
+@Composable
+fun LockScreen(act: FragmentActivity, onUnlock: (CharArray) -> Unit, say: (String) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var pw by remember { mutableStateOf("") }
+    var wait by remember { mutableLongStateOf(Vault.waitMs(act)) }
+    var busy by remember { mutableStateOf(false) }
+    LaunchedEffect(wait) { if (wait > 0) { delay(1000); wait = Vault.waitMs(act) } }
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = CardBg)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Odblokuj portfel", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            OutlinedTextField(pw, { pw = it }, Modifier.fillMaxWidth(), label = { Text("Hasło") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrect = false),
+                visualTransformation = PasswordVisualTransformation())
+            if (wait > 0) Text("Zbyt wiele prób. Odczekaj ${wait / 1000} s", color = Warn, fontSize = 12.sp)
+            Button(enabled = !busy && wait == 0L && pw.isNotEmpty(), modifier = Modifier.fillMaxWidth(), onClick = {
+                scope.launch {
+                    busy = true
+                    val chars = pw.toCharArray()
+                    val ok = withContext(Dispatchers.IO) { Vault.verify(act, chars) }
+                    if (ok) { Vault.clearFails(act); pw = ""; onUnlock(chars) }
+                    else { Vault.registerFail(act); wait = Vault.waitMs(act); chars.fill('\u0000'); pw = ""; say("Złe hasło") }
+                    busy = false
+                }
+            }) { Text(if (busy) "Sprawdzam…" else "Odblokuj") }
         }
     }
 }
@@ -384,7 +435,7 @@ fun SweepDialog(act: FragmentActivity, net: Net, addrs: List<String>, tokens: Li
                         busy = false
                     }
                 } else if (log.isEmpty() && ok.isNotEmpty()) {
-                    Vault.load(act, { mn, pass ->
+                    Vault.load(act, Session.pw ?: CharArray(0), { mn, pass ->
                         scope.launch {
                             running = true
                             val g = gp!!
@@ -512,7 +563,7 @@ fun SendDialog(act: FragmentActivity, idx: Int, addrs: List<String>, net: Net, t
                         catch (e: Exception) { say("RPC: ${e.message}") }
                     }
                 } else {
-                    Vault.load(act, { mn, pass ->
+                    Vault.load(act, Session.pw ?: CharArray(0), { mn, pass ->
                         scope.launch {
                             try {
                                 val kp = Wallet.keyPair(mn, pass, idx)
