@@ -120,7 +120,9 @@ fun parseAmt(s: String, dec: Int): BigInteger =
 @Composable
 fun App(act: FragmentActivity) {
     var has by remember { mutableStateOf(Vault.exists(act)) }
-    var addrs by remember { mutableStateOf(Vault.addresses(act)) }
+    var addrs by remember { mutableStateOf<List<String>>(emptyList()) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Session.unlocked) { if (!Session.unlocked) addrs = emptyList() }
     var msg by remember { mutableStateOf("") }
     var askBio by remember { mutableStateOf(false) }
     var bioOn by remember { mutableStateOf(Vault.bioEnabled(act)) }
@@ -152,8 +154,15 @@ fun App(act: FragmentActivity) {
         Spacer(Modifier.height(8.dp))
         Box(Modifier.weight(1f)) {
             if (!has) Setup(act, { c -> Session.pw = c; Session.unlocked = true; has = true; addrs = Vault.addresses(act); msg = ""; askBio = Vault.bioAvailable(act) && !Vault.bioAsked(act) }, { msg = it })
-            else if (!Session.unlocked) LockScreen(act, { c, viaBio -> Session.pw = c; Session.unlocked = true; msg = ""
-                if (!viaBio) askBio = Vault.bioAvailable(act) && !Vault.bioAsked(act) && !Vault.bioEnabled(act) }, { msg = it })
+            else if (!Session.unlocked) LockScreen(act, { c, viaBio ->
+                scope.launch {
+                    val ok = withContext(Dispatchers.IO) { Vault.unlockData(act, c) }
+                    if (!ok) { msg = "Nie udało się odszyfrować danych portfela"; return@launch }
+                    Session.pw = c; Session.unlocked = true; msg = ""
+                    addrs = Vault.addresses(act); Prefs.loadRpc(act)
+                    if (!viaBio) askBio = Vault.bioAvailable(act) && !Vault.bioAsked(act) && !Vault.bioEnabled(act)
+                }
+            }, { msg = it })
             else {
                 // Portfel zostaje w kompozycji (stan i salda nie giną przy zmianie zakładki)
                 Box(if (tab == 0) Modifier.fillMaxSize() else Modifier.size(0.dp)) { Main(act, addrs) { msg = it } }

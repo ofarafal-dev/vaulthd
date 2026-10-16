@@ -35,6 +35,9 @@ object Vault {
     private const val VER = "verifier.bin"
     private const val ATT = "attempts.txt"
     private const val ADDR = "addresses.txt"
+    private const val DK = "dk.bin"
+    private const val DALIAS = "vaulthd_data"
+    private const val DADDR = "addr.enc"
     private const val BIO_ALIAS = "vaulthd_bio"
     private const val BIO = "bio.bin"
     private const val ASKED = "bio_asked.txt"
@@ -88,8 +91,10 @@ object Vault {
     fun clearFails(c: Context) { File(c.filesDir, ATT).delete() }
 
     fun wipe(c: Context) {
-        listOf(FILE, VER, ATT, ADDR, BIO, ASKED).forEach { File(c.filesDir, it).delete() }
-        runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.apply { deleteEntry(ALIAS); deleteEntry(BIO_ALIAS) } }
+        listOf(FILE, VER, ATT, ADDR, BIO, ASKED, DK, DADDR).forEach { File(c.filesDir, it).delete() }
+        c.filesDir.listFiles()?.forEach { f -> if (f.name.endsWith(".enc") || f.name == "tokens.txt" || f.name.startsWith("top_")) f.delete() }
+        runCatching { c.getSharedPreferences("ui", Context.MODE_PRIVATE).edit().apply { NETS.forEach { remove("rpc_${it.chainId}") } }.apply() }
+        runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.apply { deleteEntry(ALIAS); deleteEntry(BIO_ALIAS); deleteEntry(DALIAS) } }
     }
 
     fun exists(c: Context): Boolean {
@@ -99,7 +104,74 @@ object Vault {
     }
 
     fun addresses(c: Context): List<String> =
-        File(c.filesDir, ADDR).takeIf { it.exists() }?.readLines()?.filter { it.isNotBlank() } ?: emptyList()
+        readEnc(c, DADDR)?.lines()?.filter { it.isNotBlank() } ?: emptyList()
+
+    // ---- szyfrowanie danych (adresy, tokeny, RPC): klucz danych (DK) opakowany hasłem (PBKDF2) i kluczem sprzętowym ----
+    private fun dataKey(): SecretKey {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (ks.getKey(DALIAS, null) as? SecretKey)?.let { return it }
+        val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        fun spec(sb: Boolean) = KeyGenParameterSpec.Builder(DALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256).setIsStrongBoxBacked(sb).build()
+        return try { gen.init(spec(true)); gen.generateKey() }
+        catch (e: StrongBoxUnavailableException) { gen.init(spec(false)); gen.generateKey() }
+    }
+
+    private fun wrapDk(dk: ByteArray, pw: CharArray): ByteArray {
+        val inner = innerEnc(pw, dk)
+        val c = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, dataKey()) }
+        return c.iv + c.doFinal(inner)
+    }
+
+    private fun migrateLegacy(c: Context) {
+        val dir = c.filesDir
+        File(dir, ADDR).takeIf { it.exists() }?.let { writeEnc(c, DADDR, it.readText()); it.delete() }
+        File(dir, "tokens.txt").takeIf { it.exists() }?.let { writeEnc(c, "tokens.enc", it.readText().trimEnd()); it.delete() }
+        dir.listFiles()?.filter { it.name.startsWith("top_") && it.name.endsWith(".txt") }?.forEach { f ->
+            writeEnc(c, f.name.removeSuffix(".txt") + ".enc", f.readText().trimEnd()); f.delete()
+        }
+    }
+
+    /** Odszyfrowuje klucz danych hasłem i kluczem sprzętowym; klucz trzymany w pamięci do blokady. */
+    fun unlockData(c: Context, pw: CharArray): Boolean = try {
+        val f = File(c.filesDir, DK)
+        if (!f.exists()) { // pierwsze uruchomienie po aktualizacji: zaszyfruj stare dane jawne
+            val dk = rnd(32)
+            f.writeBytes(wrapDk(dk, pw)); Session.dk = dk; migrateLegacy(c); true
+        } else {
+            val raw = f.readBytes()
+            val outer = Cipher.getInstance("AES/GCM/NoPadding")
+                .apply { init(Cipher.DECRYPT_MODE, dataKey(), GCMParameterSpec(128, raw.copyOfRange(0, 12))) }
+            Session.dk = innerDec(pw, outer.doFinal(raw.copyOfRange(12, raw.size))); true
+        }
+    } catch (e: Exception) { false }
+
+    private fun encWith(dk: ByteArray, name: String, text: String): ByteArray {
+        val iv = rnd(12)
+        val c = Cipher.getInstance("AES/GCM/NoPadding").apply {
+            init(Cipher.ENCRYPT_MODE, SecretKeySpec(dk, "AES"), GCMParameterSpec(128, iv)); updateAAD(name.toByteArray())
+        }
+        return iv + c.doFinal(text.toByteArray())
+    }
+
+    fun writeEnc(c: Context, name: String, text: String) {
+        val dk = Session.dk ?: return
+        File(c.filesDir, name).writeBytes(encWith(dk, name, text))
+    }
+
+    fun readEnc(c: Context, name: String): String? {
+        val dk = Session.dk ?: return null
+        val f = File(c.filesDir, name)
+        if (!f.exists()) return null
+        return try {
+            val raw = f.readBytes()
+            val cph = Cipher.getInstance("AES/GCM/NoPadding").apply {
+                init(Cipher.DECRYPT_MODE, SecretKeySpec(dk, "AES"), GCMParameterSpec(128, raw.copyOfRange(0, 12))); updateAAD(name.toByteArray())
+            }
+            String(cph.doFinal(raw.copyOfRange(12, raw.size)))
+        } catch (e: Exception) { null }
+    }
 
     private fun key(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -200,6 +272,8 @@ object Vault {
             try {
                 val inner = innerEnc(pw, (mn + SEP + pass).toByteArray())
                 val ver = verifierFor(pw)
+                val dk = Session.dk ?: rnd(32)
+                val dkBlob = wrapDk(dk, pw)
                 a.runOnUiThread {
                     try {
                         val c = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
@@ -207,7 +281,10 @@ object Vault {
                             val ct = cp.doFinal(inner)
                             File(a.filesDir, FILE).writeBytes(cp.iv + ct)
                             File(a.filesDir, VER).writeBytes(ver)
-                            File(a.filesDir, ADDR).writeText(addrs.joinToString("\n"))
+                            File(a.filesDir, DK).writeBytes(dkBlob)
+                            File(a.filesDir, DADDR).writeBytes(encWith(dk, DADDR, addrs.joinToString("\n")))
+                            File(a.filesDir, ADDR).delete()
+                            Session.dk = dk
                             clearFails(a)
                             done()
                         }, fail)

@@ -8,5 +8,6 @@ import androidx.compose.runtime.setValue
 object Session {
     var pw: CharArray? = null
     var unlocked by mutableStateOf(false)
-    fun lock() { pw?.fill('\u0000'); pw = null; unlocked = false }
+    var dk: ByteArray? = null // klucz danych (adresy, tokeny, RPC) - tylko w pamięci, tylko po odblokowaniu
+    fun lock() { pw?.fill('\u0000'); pw = null; dk?.fill(0); dk = null; unlocked = false; Prefs.clearRpc() }
 }
