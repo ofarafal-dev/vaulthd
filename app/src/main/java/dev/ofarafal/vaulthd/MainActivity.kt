@@ -24,10 +24,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
@@ -115,7 +117,8 @@ fun App(act: FragmentActivity) {
 
 @Composable
 fun Setup(act: FragmentActivity, onDone: (CharArray) -> Unit, say: (String) -> Unit) {
-    var mn by remember { mutableStateOf("") }
+    var mnv by remember { mutableStateOf(TextFieldValue("")) }
+    val mn = mnv.text
     var pass by remember { mutableStateOf("") }
     var gen by remember { mutableStateOf(false) }
     var w3 by remember { mutableStateOf("") }
@@ -124,19 +127,41 @@ fun Setup(act: FragmentActivity, onDone: (CharArray) -> Unit, say: (String) -> U
     var p2 by remember { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
     val kb = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrect = false)
-    val words = mn.trim().split(Regex("\\s+"))
-    val valid = MnemonicUtils.validateMnemonic(mn.trim())
+    val norm = mn.trim().lowercase().replace(Regex("\\s+"), " ")
+    val words = norm.split(" ")
+    val valid = MnemonicUtils.validateMnemonic(norm)
+    val toks = norm.split(" ").filter { it.isNotEmpty() }
+    val typing = mn.isNotEmpty() && !mn.last().isWhitespace()
+    val lastTok = if (typing && toks.isNotEmpty()) toks.last() else ""
+    val done = if (typing) toks.dropLast(1) else toks
+    val sugg = if (gen) emptyList() else Bip39.suggest(lastTok)
+    val unknown = if (gen) emptyList() else done.filter { it !in Bip39.set }
     val quizOk = !gen || (words.size > 6 && w3.trim() == words[2] && w7.trim() == words[6])
     val pwOk = p1.length >= 8 && p1 == p2
     Card(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = CardBg)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Nowy portfel", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-            Button(onClick = { mn = Wallet.newMnemonic(); gen = true; w3 = ""; w7 = "" }, Modifier.fillMaxWidth()) {
+            Button(onClick = { mnv = TextFieldValue(Wallet.newMnemonic()); gen = true; w3 = ""; w7 = "" }, Modifier.fillMaxWidth()) {
                 Text("Generuj nowy seed (12 słów)")
             }
-            OutlinedTextField(mn, { mn = it; gen = false }, Modifier.fillMaxWidth(),
-                label = { Text("Seed BIP39 (lub wklej własny, by zaimportować)") }, keyboardOptions = kb)
+            OutlinedTextField(mnv, { mnv = it; gen = false }, Modifier.fillMaxWidth(),
+                label = { Text("Seed BIP39 (lub wpisz / wklej własny)") }, keyboardOptions = kb)
+            if (!gen && mn.isNotBlank()) {
+                if (sugg.isNotEmpty()) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        sugg.forEach { w ->
+                            FilterChip(selected = false, label = { Text(w) }, onClick = {
+                                val t = mn.dropLast(lastTok.length) + w + " "
+                                mnv = TextFieldValue(t, TextRange(t.length))
+                            })
+                        }
+                    }
+                }
+                if (unknown.isNotEmpty()) Text("Nieznane słowo: ${unknown.first()}", color = Color(0xFFF87171), fontSize = 12.sp)
+                else if (valid) Text("✓ Poprawny seed (${words.size} słów)", color = Accent, fontSize = 12.sp)
+                else Text("Słowa: ${toks.size} (potrzeba 12, 15, 18, 21 lub 24)", color = Muted, fontSize = 12.sp)
+            }
             OutlinedTextField(pass, { pass = it }, Modifier.fillMaxWidth(),
                 label = { Text("Passphrase BIP39 (opcjonalnie)") }, keyboardOptions = kb,
                 visualTransformation = PasswordVisualTransformation())
@@ -152,10 +177,10 @@ fun Setup(act: FragmentActivity, onDone: (CharArray) -> Unit, say: (String) -> U
             OutlinedTextField(p2, { p2 = it }, Modifier.fillMaxWidth(), label = { Text("Powtórz hasło") },
                 keyboardOptions = kb, visualTransformation = PasswordVisualTransformation())
             Button(enabled = valid && quizOk && pwOk && !saving, modifier = Modifier.fillMaxWidth(), onClick = {
-                val m = mn.trim(); val chars = p1.toCharArray()
+                val m = norm; val chars = p1.toCharArray()
                 saving = true
                 Vault.save(act, m, pass, Wallet.addresses(m, pass), chars,
-                    { mn = ""; w3 = ""; w7 = ""; p1 = ""; p2 = ""; saving = false; onDone(chars) },
+                    { mnv = TextFieldValue(""); w3 = ""; w7 = ""; p1 = ""; p2 = ""; saving = false; onDone(chars) },
                     { saving = false; say(it) })
             }) { Text(if (saving) "Szyfruję…" else "Zapisz w sejfie (biometria)") }
         }

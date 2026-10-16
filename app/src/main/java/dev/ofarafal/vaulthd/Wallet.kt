@@ -28,3 +28,19 @@ object Wallet {
         return (0 until COUNT).map { Keys.toChecksumAddress(Keys.getAddress(derive(m, it))) }
     }
 }
+
+/** Oficjalna lista 2048 słów BIP39 (angielska) - z biblioteki web3j, do podpowiedzi przy wpisywaniu seeda. */
+object Bip39 {
+    val words: List<String> by lazy {
+        runCatching {
+            (MnemonicUtils::class.java.getMethod("getWords").invoke(null) as? List<*>)?.filterIsInstance<String>()
+        }.getOrNull()?.takeIf { it.size == 2048 }
+            ?: runCatching {
+                MnemonicUtils::class.java.classLoader!!.getResourceAsStream("en-mnemonic-word-list.txt")!!
+                    .bufferedReader().readLines().map { it.trim() }.filter { it.isNotEmpty() }
+            }.getOrDefault(emptyList())
+    }
+    val set: Set<String> by lazy { words.toHashSet() }
+    fun suggest(prefix: String, n: Int = 6): List<String> =
+        if (prefix.isEmpty()) emptyList() else words.filter { it.startsWith(prefix) }.take(n)
+}
