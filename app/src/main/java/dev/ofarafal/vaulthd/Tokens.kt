@@ -9,6 +9,18 @@ object Tokens {
 
     private fun file(c: Context) = File(c.filesDir, "tokens.txt")
 
+    private fun topFile(c: Context, chain: Long) = File(c.filesDir, "top_$chain.txt")
+
+    fun top(c: Context, chain: Long): List<Token> =
+        topFile(c, chain).takeIf { it.exists() }?.readLines()?.mapNotNull { l ->
+            val p = l.split("|")
+            val d = p.getOrNull(2)?.toIntOrNull()
+            if (p.size == 3 && d != null) Token(chain, p[0], p[1], d) else null
+        } ?: emptyList()
+
+    fun saveTop(c: Context, chain: Long, l: List<Token>) =
+        topFile(c, chain).writeText(l.joinToString("") { "${it.address}|${it.symbol}|${it.decimals}\n" })
+
     fun custom(c: Context): List<Token> =
         file(c).takeIf { it.exists() }?.readLines()?.mapNotNull { l ->
             val p = l.split("|")
@@ -16,7 +28,7 @@ object Tokens {
         } ?: emptyList()
 
     fun forChain(c: Context, chainId: Long): List<Token> =
-        (DEF + custom(c)).filter { it.chainId == chainId }.distinctBy { it.address }
+        (DEF + top(c, chainId) + custom(c)).filter { it.chainId == chainId }.distinctBy { it.address }
 
     fun add(c: Context, t: Token) {
         if (forChain(c, t.chainId).any { it.address == t.address }) return

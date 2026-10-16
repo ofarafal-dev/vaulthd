@@ -12,7 +12,7 @@ data class Hist(val hash: String, val ts: String, val out: Boolean, val peer: St
 object Api {
     private fun get(url: String): String {
         val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = 10000; c.readTimeout = 15000
+        c.connectTimeout = 10000; c.readTimeout = 40000
         c.setRequestProperty("User-Agent", "VaultHD/0.2"); c.setRequestProperty("Accept", "application/json")
         try {
             if (c.responseCode !in 200..299) throw RuntimeException("HTTP ${c.responseCode}")
@@ -34,6 +34,23 @@ object Api {
             if (p.isNaN()) continue
             val kk = k.lowercase()
             out[if (kk == "coingecko:" + cg.lowercase()) "native" else kk.substringAfter(":")] = p
+        }
+        return out
+    }
+
+    /** Top 200 wg kapitalizacji (CoinGecko, bez klucza) z adresami kontraktów dla danej sieci: (adres, SYMBOL). */
+    fun top200(n: Net): List<Pair<String, String>> {
+        val plat = CG_PLATFORM[n.chainId] ?: throw RuntimeException("Brak listy top 200 dla tej sieci")
+        val mk = JSONArray(get("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=200&page=1"))
+        val ids = HashMap<String, String>()
+        for (i in 0 until mk.length()) { val o = mk.getJSONObject(i); ids[o.getString("id")] = o.getString("symbol").uppercase() }
+        val list = JSONArray(get("https://api.coingecko.com/api/v3/coins/list?include_platform=true"))
+        val out = ArrayList<Pair<String, String>>()
+        for (i in 0 until list.length()) {
+            val o = list.getJSONObject(i)
+            val sym = ids[o.getString("id")] ?: continue
+            val a = o.optJSONObject("platforms")?.str(plat)?.lowercase() ?: continue
+            if (Regex("0x[0-9a-f]{40}").matches(a)) out.add(a to sym)
         }
         return out
     }

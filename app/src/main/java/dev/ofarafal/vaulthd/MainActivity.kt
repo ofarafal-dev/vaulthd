@@ -1,6 +1,11 @@
 package dev.ofarafal.vaulthd
 
 import android.content.ClipData
+import android.content.ComponentName
+import android.content.pm.PackageManager
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
@@ -89,6 +94,27 @@ fun checkAddr(a: String, tok: Token? = null): String? {
     if (tok != null && body.equals(tok.address.removePrefix("0x"), true)) return "To adres kontraktu tokena - tokeny przepadną"
     return null
 }
+fun scanQr(act: FragmentActivity, say: (String) -> Unit, onAddr: (String) -> Unit) {
+    val opts = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
+    GmsBarcodeScanning.getClient(act, opts).startScan()
+        .addOnSuccessListener { b ->
+            val a = Regex("0x[0-9a-fA-F]{40}").find(b.rawValue ?: "")?.value
+            if (a != null) onAddr(a) else say("W kodzie QR nie ma adresu 0x…")
+        }
+        .addOnFailureListener { e -> say("Skaner QR: ${e.message}") }
+}
+private const val ALIAS_PKG = "dev.ofarafal.vaulthd"
+fun isDisguised(act: FragmentActivity): Boolean =
+    act.packageManager.getComponentEnabledSetting(ComponentName(act.packageName, "$ALIAS_PKG.LauncherNotes")) ==
+        PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+fun setDisguise(act: FragmentActivity, on: Boolean) {
+    fun set(n: String, en: Boolean) = act.packageManager.setComponentEnabledSetting(
+        ComponentName(act.packageName, "$ALIAS_PKG.$n"),
+        if (en) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+        PackageManager.DONT_KILL_APP)
+    if (on) { set("LauncherNotes", true); set("LauncherVault", false) }
+    else { set("LauncherVault", true); set("LauncherNotes", false) }
+}
 fun parseAmt(s: String, dec: Int): BigInteger =
     BigDecimal(s.trim().replace(',', '.')).movePointRight(dec).toBigIntegerExact()
 
@@ -98,15 +124,23 @@ fun App(act: FragmentActivity) {
     var addrs by remember { mutableStateOf(Vault.addresses(act)) }
     var msg by remember { mutableStateOf("") }
     var confirmWipe by remember { mutableStateOf(false) }
+    var confirmDisguise by remember { mutableStateOf(false) }
+    var disguised by remember { mutableStateOf(isDisguised(act)) }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("VaultHD", fontSize = 26.sp, fontWeight = FontWeight.Bold)
-            Text("  EVM · ${Wallet.COUNT} adresów", color = Accent, fontSize = 12.sp)
+            Text("  EVM", color = Accent, fontSize = 12.sp)
             if (has) {
                 Spacer(Modifier.weight(1f))
+                TextButton(onClick = { confirmDisguise = true }) { Text(if (disguised) "Pokaż ikonę" else "Ukryj ikonę", color = Muted, fontSize = 12.sp) }
                 TextButton(onClick = { confirmWipe = true }) { Text("Zmień seed", color = Muted, fontSize = 12.sp) }
             }
         }
+        if (confirmDisguise) AlertDialog(onDismissRequest = { confirmDisguise = false },
+            title = { Text(if (disguised) "Pokazać ikonę VaultHD?" else "Ukryć aplikację?") },
+            text = { Text(if (disguised) "W launcherze znów pojawi się ikona VaultHD." else "W launcherze aplikacja będzie wyglądać jak „Notatnik” (inna ikona i nazwa). Zmiana może chwilowo zamknąć apkę - uruchom ją ponownie z ikony Notatnika.") },
+            confirmButton = { Button(onClick = { disguised = !disguised; setDisguise(act, disguised); confirmDisguise = false }) { Text("OK") } },
+            dismissButton = { TextButton(onClick = { confirmDisguise = false }) { Text("Anuluj") } })
         if (confirmWipe) AlertDialog(onDismissRequest = { confirmWipe = false },
             title = { Text("Usunąć portfel z tego telefonu?") },
             text = { Text("Zaszyfrowany seed zostanie skasowany. Bez zapisanego seeda (12 słów) stracisz dostęp do środków. Potem wkleisz własny seed lub wygenerujesz nowy.") },
@@ -241,6 +275,7 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
     var prices by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
     var loading by remember { mutableStateOf(false) }
     var scanning by remember { mutableStateOf(false) }
+    var importing by remember { mutableStateOf(false) }
     var hideEmpty by remember { mutableStateOf(false) }
     var from by remember { mutableStateOf<Int?>(null) }
     var hist by remember { mutableStateOf<Int?>(null) }
@@ -254,14 +289,18 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
             loading = true
             try {
                 native = withContext(Dispatchers.IO) { Chain.balances(net, addrs) }
-                for (t in tokens) {
-                    val m = withContext(Dispatchers.IO) {
-                        runCatching { Chain.tokenBalances(net, t, addrs) }.getOrDefault(emptyMap())
+                if (tokens.isNotEmpty()) {
+                    tb = withContext(Dispatchers.IO) {
+                        runCatching { Chain.tokenBalancesMulti(net, tokens, addrs) }.getOrElse { e ->
+                            if (tokens.size <= 30) tokens.associate { t ->
+                                t.address to runCatching { Chain.tokenBalances(net, t, addrs) }.getOrDefault(emptyMap())
+                            } else throw e
+                        }
                     }
-                    tb = tb + (t.address to m)
                 }
-                if (!net.testnet) prices = withContext(Dispatchers.IO) {
-                    runCatching { Api.prices(net, tokens) }.getOrDefault(emptyMap())
+                if (!net.testnet) {
+                    val heldNow = tokens.filter { t -> addrs.any { (tb[t.address]?.get(it)?.signum() ?: 0) > 0 } }
+                    prices = withContext(Dispatchers.IO) { runCatching { Api.prices(net, heldNow) }.getOrDefault(emptyMap()) }
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { say("Błąd RPC: ${e.message}") }
@@ -289,6 +328,24 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
         }
     }
 
+    fun importTop() {
+        scope.launch {
+            importing = true
+            try {
+                say("Pobieram top 200 z CoinGecko…")
+                val n = withContext(Dispatchers.IO) {
+                    val raw = Api.top200(net)
+                    val decs = Chain.decimals(net, raw.map { it.first })
+                    val list = raw.mapNotNull { (a, sy) -> decs[a]?.let { d -> Token(net.chainId, a, sy.take(12), d) } }
+                    Tokens.saveTop(act, net.chainId, list); list.size
+                }
+                say("Dodano $n tokenów z top 200 (CoinGecko)")
+                tokVer++
+            } catch (e: Exception) { say("CoinGecko: ${e.message}") }
+            importing = false
+        }
+    }
+
     fun hasAny(a: String) = (native[a]?.signum() ?: 0) > 0 ||
         tokens.any { (tb[it.address]?.get(a)?.signum() ?: 0) > 0 }
     fun addrUsd(a: String): Double? {
@@ -298,6 +355,7 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
         tokens.forEach { t -> tb[t.address]?.get(a)?.let { v -> prices[t.address]?.let { p -> s += toD(v, t.decimals) * p } } }
         return s
     }
+    val held = tokens.filter { t -> addrs.any { (tb[t.address]?.get(it)?.signum() ?: 0) > 0 } }
     val visible = addrs.indices.filter { !hideEmpty || hasAny(addrs[it]) }
     val total = if (prices.isEmpty()) null else addrs.sumOf { addrUsd(it) ?: 0.0 }
 
@@ -319,12 +377,15 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
         Spacer(Modifier.height(8.dp))
         Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = CardBg)) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("${net.name} · ${tokens.size} tokenów", fontWeight = FontWeight.SemiBold)
+                Text("${net.name} · ${held.size} z ${tokens.size} tokenów", fontWeight = FontWeight.SemiBold)
                 total?.let { Text(usdStr(it), fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Accent) }
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { refresh() }, enabled = !loading) { Text(if (loading) "Ładuję…" else "Odśwież") }
                     OutlinedButton(onClick = { showSweep = true }) { Text("Zbierz środki") }
                     OutlinedButton(onClick = { showAdd = true }) { Text("+ Token") }
+                    if (CG_PLATFORM.containsKey(net.chainId)) OutlinedButton(onClick = { importTop() }, enabled = !importing) {
+                        Text(if (importing) "Importuję…" else "Top 200")
+                    }
                     if (net.bs != null) OutlinedButton(onClick = { scan() }, enabled = !scanning) {
                         Text(if (scanning) "Skanuję…" else "Skanuj tokeny")
                     }
@@ -362,7 +423,7 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
                         tokens.forEach { t ->
                             val v = tb[t.address]?.get(a)
                             val zero = (v?.signum() ?: 0) == 0
-                            if (!(hideEmpty && zero)) AssetRow(t.symbol, v?.let { fmtTok(it, t.decimals) } ?: "…", zero,
+                            if (!zero) AssetRow(t.symbol, v?.let { fmtTok(it, t.decimals) } ?: "…", zero,
                                 v?.let { x -> prices[t.address]?.let { toD(x, t.decimals) * it } })
                         }
                     }
@@ -370,10 +431,10 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
             }
         }
     }
-    from?.let { SendDialog(act, it, addrs, net, tokens, native, tb, { from = null; refresh() }, say) }
+    from?.let { SendDialog(act, it, addrs, net, held, native, tb, { from = null; refresh() }, say) }
     hist?.let { HistoryDialog(act, net, addrs[it]) { hist = null } }
     if (showAdd) AddTokenDialog(act, net, { changed -> showAdd = false; if (changed) tokVer++ }, say)
-    if (showSweep) SweepDialog(act, net, addrs, tokens, native, tb, { showSweep = false; refresh() }, say)
+    if (showSweep) SweepDialog(act, net, addrs, held, native, tb, { showSweep = false; refresh() }, say)
 }
 
 @Composable
@@ -444,8 +505,11 @@ fun SweepDialog(act: FragmentActivity, net: Net, addrs: List<String>, tokens: Li
                         FilterChip(selected = sel == i, onClick = { if (items == null) sel = i }, label = { Text(s) })
                     }
                 }
-                OutlinedTextField(dest, { dest = it }, enabled = items == null, label = { Text("Adres docelowy 0x…") },
-                    keyboardOptions = KeyboardOptions(autoCorrect = false))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(dest, { dest = it }, Modifier.weight(1f), enabled = items == null,
+                        label = { Text("Adres docelowy 0x…") }, keyboardOptions = KeyboardOptions(autoCorrect = false))
+                    if (items == null) TextButton(onClick = { scanQr(act, say) { dest = it } }) { Text("QR") }
+                }
                 items?.let { list ->
                     if (list.isEmpty()) Text("Brak adresów z saldem tego aktywa.", color = Muted, fontSize = 12.sp)
                     list.forEach {
@@ -506,8 +570,11 @@ fun AddTokenDialog(act: FragmentActivity, net: Net, onClose: (Boolean) -> Unit, 
         title = { Text("Dodaj token (${net.name})") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(addr, { addr = it; info = null }, Modifier.fillMaxWidth(),
-                    label = { Text("Adres kontraktu 0x…") }, keyboardOptions = KeyboardOptions(autoCorrect = false))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(addr, { addr = it; info = null }, Modifier.weight(1f),
+                        label = { Text("Adres kontraktu 0x…") }, keyboardOptions = KeyboardOptions(autoCorrect = false))
+                    TextButton(onClick = { scanQr(act, say) { addr = it; info = null } }) { Text("QR") }
+                }
                 info?.let {
                     Text("Znaleziono: ${it.symbol} (${it.decimals} dec.)\nSprawdź, czy to OFICJALNY kontrakt (np. na CoinGecko). Fałszywe tokeny są częste.",
                         color = Warn, fontSize = 12.sp)
@@ -552,12 +619,13 @@ fun SendDialog(act: FragmentActivity, idx: Int, addrs: List<String>, net: Net, t
                onClose: () -> Unit, say: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     val from = addrs[idx]
+    val toks = tokens.filter { (tb[it.address]?.get(from)?.signum() ?: 0) > 0 }
     var sel by remember { mutableIntStateOf(0) }
     var to by remember { mutableStateOf("") }
     var amt by remember { mutableStateOf("") }
     var fee by remember { mutableStateOf<Fee?>(null) }
     var units by remember { mutableStateOf(BigInteger.ZERO) }
-    val tok = if (sel == 0) null else tokens[sel - 1]
+    val tok = if (sel == 0) null else toks[sel - 1]
     val sym = tok?.symbol ?: net.sym
     val dec = tok?.decimals ?: 18
     val avail = if (tok == null) native[from] else tb[tok.address]?.get(from)
@@ -567,13 +635,16 @@ fun SendDialog(act: FragmentActivity, idx: Int, addrs: List<String>, net: Net, t
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(from, fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Muted)
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    (listOf(net.sym) + tokens.map { it.symbol }).forEachIndexed { i, s ->
+                    (listOf(net.sym) + toks.map { it.symbol }).forEachIndexed { i, s ->
                         FilterChip(selected = sel == i, onClick = { if (fee == null) sel = i }, label = { Text(s) })
                     }
                 }
                 Text("Dostępne: ${avail?.let { fmtTok(it, dec) } ?: "…"} $sym", fontSize = 12.sp, color = Muted)
-                OutlinedTextField(to, { to = it }, enabled = fee == null, label = { Text("Adres odbiorcy 0x…") },
-                    keyboardOptions = KeyboardOptions(autoCorrect = false))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(to, { to = it }, Modifier.weight(1f), enabled = fee == null,
+                        label = { Text("Adres odbiorcy 0x…") }, keyboardOptions = KeyboardOptions(autoCorrect = false))
+                    if (fee == null) TextButton(onClick = { scanQr(act, say) { to = it } }) { Text("QR") }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(amt, { amt = it }, Modifier.weight(1f), enabled = fee == null,
                         label = { Text("Kwota ($sym)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))

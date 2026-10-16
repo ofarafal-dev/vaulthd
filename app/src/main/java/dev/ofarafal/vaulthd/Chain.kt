@@ -45,6 +45,46 @@ val NETS = listOf(
         "https://base.blockscout.com", "https://base.blockscout.com", "base", "ethereum"),
 )
 
+val CG_PLATFORM = mapOf(
+    1L to "ethereum", 137L to "polygon-pos", 56L to "binance-smart-chain", 42161L to "arbitrum-one", 8453L to "base",
+)
+
+/** Multicall3 (ten sam adres na większości sieci): setki wywołań balanceOf w jednym zapytaniu RPC. */
+object Multi {
+    const val ADDR = "0xca11bde05977b3631167028862be2a173976ca11"
+    private fun word(v: BigInteger) = Numeric.toHexStringNoPrefixZeroPadded(v, 64)
+
+    /** calls: (adres kontraktu, calldata hex bez 0x) -> dane aggregate3 */
+    fun encode(calls: List<Pair<String, String>>): String {
+        val sb = StringBuilder("0x82ad56cb")
+        sb.append(word(BigInteger.valueOf(32))).append(word(BigInteger.valueOf(calls.size.toLong())))
+        val bodies = calls.map { (t, d) ->
+            val len = d.length / 2
+            val padded = d.padEnd(((len + 31) / 32) * 64, '0')
+            word(BigInteger(t.removePrefix("0x"), 16)) + word(BigInteger.ONE) + word(BigInteger.valueOf(96)) +
+                word(BigInteger.valueOf(len.toLong())) + padded
+        }
+        var off = calls.size * 32
+        bodies.forEach { sb.append(word(BigInteger.valueOf(off.toLong()))); off += it.length / 2 }
+        bodies.forEach { sb.append(it) }
+        return sb.toString()
+    }
+
+    /** Zwraca pierwsze słowo returnData (uint256) albo null, gdy wywołanie się nie powiodło. */
+    fun decode(hex: String): List<BigInteger?> {
+        val b = Numeric.hexStringToByteArray(hex)
+        fun w(i: Int) = BigInteger(1, b.copyOfRange(i, i + 32))
+        val arr = w(0).toInt(); val n = w(arr).toInt(); val base = arr + 32
+        return (0 until n).map { i ->
+            val st = base + w(base + 32 * i).toInt()
+            val ok = w(st).signum() != 0
+            val bo = w(st + 32).toInt()
+            val len = w(st + bo).toInt()
+            if (!ok || len < 32) null else BigInteger(1, b.copyOfRange(st + bo + 32, st + bo + 64))
+        }
+    }
+}
+
 object Chain {
     private fun w3(n: Net) = Web3j.build(HttpService(n.rpc))
     private fun pad(h: String) = h.removePrefix("0x").lowercase().padStart(64, '0')
@@ -71,6 +111,30 @@ object Chain {
             b.send().responses.forEachIndexed { i, r ->
                 val v = (r as EthCall).value
                 out[chunk[i]] = if (v == null || v.length < 3) BigInteger.ZERO else Numeric.toBigInt(v)
+            }
+        }
+        return out
+    }
+
+    fun tokenBalancesMulti(n: Net, tokens: List<Token>, addrs: List<String>): Map<String, Map<String, BigInteger>> {
+        val w = w3(n)
+        val out = HashMap<String, HashMap<String, BigInteger>>()
+        tokens.flatMap { t -> addrs.map { a -> t to a } }.chunked(300).forEach { chunk ->
+            val data = Multi.encode(chunk.map { (t, a) -> t.address to ("70a08231" + pad(a)) })
+            val res = call(w, null, Multi.ADDR, data)
+            if (res == null || res.length < 10) throw RuntimeException("multicall: brak odpowiedzi RPC")
+            val vals = Multi.decode(res)
+            chunk.forEachIndexed { i, (t, a) -> out.getOrPut(t.address) { HashMap() }[a] = vals.getOrNull(i) ?: BigInteger.ZERO }
+        }
+        return out
+    }
+
+    fun decimals(n: Net, addrs: List<String>): Map<String, Int> {
+        val w = w3(n); val out = HashMap<String, Int>()
+        addrs.chunked(200).forEach { chunk ->
+            val res = call(w, null, Multi.ADDR, Multi.encode(chunk.map { it to "313ce567" }))
+            if (res != null && res.length > 10) Multi.decode(res).forEachIndexed { i, v ->
+                if (v != null && v.bitLength() < 8 && v.toInt() <= 36) out[chunk[i]] = v.toInt()
             }
         }
         return out

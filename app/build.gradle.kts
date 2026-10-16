@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "dev.ofarafal.vaulthd"
     compileSdk = 34
-    defaultConfig { applicationId = "dev.ofarafal.vaulthd"; minSdk = 30; targetSdk = 34; versionCode = 1; versionName = "0.1" }
+    defaultConfig { applicationId = "app.ofarafal.notes"; minSdk = 30; targetSdk = 34; versionCode = 1; versionName = "0.1" }
     buildTypes { release { isMinifyEnabled = true; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro") } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
@@ -19,4 +19,5 @@ dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.fragment:fragment-ktx:1.8.0")
     implementation("org.web3j:core:4.12.0")
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 }
