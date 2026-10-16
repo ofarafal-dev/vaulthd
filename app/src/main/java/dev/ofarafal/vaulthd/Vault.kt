@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
+import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -34,6 +35,9 @@ object Vault {
     private const val VER = "verifier.bin"
     private const val ATT = "attempts.txt"
     private const val ADDR = "addresses.txt"
+    private const val BIO_ALIAS = "vaulthd_bio"
+    private const val BIO = "bio.bin"
+    private const val ASKED = "bio_asked.txt"
     private const val SEP = "\u0000"
     private const val ITER = 250_000
 
@@ -84,8 +88,8 @@ object Vault {
     fun clearFails(c: Context) { File(c.filesDir, ATT).delete() }
 
     fun wipe(c: Context) {
-        listOf(FILE, VER, ATT, ADDR).forEach { File(c.filesDir, it).delete() }
-        runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(ALIAS) }
+        listOf(FILE, VER, ATT, ADDR, BIO, ASKED).forEach { File(c.filesDir, it).delete() }
+        runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.apply { deleteEntry(ALIAS); deleteEntry(BIO_ALIAS) } }
     }
 
     fun exists(c: Context): Boolean {
@@ -124,6 +128,70 @@ object Vault {
             }
             override fun onAuthenticationError(code: Int, msg: CharSequence) { fail(msg.toString()) }
         }).authenticate(info, BiometricPrompt.CryptoObject(cipher))
+    }
+
+    // --- Odblokowanie odciskiem: hasło zaszyfrowane kluczem Keystore wymagającym SILNEJ biometrii (bez PIN-u telefonu) ---
+    fun bioEnabled(c: Context) = File(c.filesDir, BIO).exists()
+    fun bioAsked(c: Context) = File(c.filesDir, ASKED).exists()
+    fun markBioAsked(c: Context) { File(c.filesDir, ASKED).writeText("1") }
+    fun bioAvailable(c: Context) =
+        BiometricManager.from(c).canAuthenticate(Authenticators.BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
+    fun bioDisable(c: Context) {
+        File(c.filesDir, BIO).delete()
+        runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(BIO_ALIAS) }
+    }
+
+    private fun bioKey(): SecretKey {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (ks.getKey(BIO_ALIAS, null) as? SecretKey)?.let { return it }
+        val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        fun spec(sb: Boolean) = KeyGenParameterSpec.Builder(
+            BIO_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .setUserAuthenticationRequired(true)
+            .setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)
+            .setInvalidatedByBiometricEnrollment(true)
+            .setIsStrongBoxBacked(sb)
+            .build()
+        return try { gen.init(spec(true)); gen.generateKey() }
+        catch (e: StrongBoxUnavailableException) { gen.init(spec(false)); gen.generateKey() }
+    }
+
+    private fun bioAuth(a: FragmentActivity, cipher: Cipher, title: String, ok: (Cipher) -> Unit, fail: (String) -> Unit) {
+        val info = BiometricPrompt.PromptInfo.Builder().setTitle(title).setNegativeButtonText("Użyj hasła")
+            .setAllowedAuthenticators(Authenticators.BIOMETRIC_STRONG).build()
+        BiometricPrompt(a, ContextCompat.getMainExecutor(a), object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(r: BiometricPrompt.AuthenticationResult) {
+                try { ok(r.cryptoObject!!.cipher!!) } catch (e: Exception) { fail("Błąd: ${e.message}") }
+            }
+            override fun onAuthenticationError(code: Int, msg: CharSequence) { fail(msg.toString()) }
+        }).authenticate(info, BiometricPrompt.CryptoObject(cipher))
+    }
+
+    fun bioEnroll(a: FragmentActivity, pw: CharArray, done: () -> Unit, fail: (String) -> Unit) {
+        try {
+            val c = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, bioKey()) }
+            bioAuth(a, c, "Włącz odblokowanie odciskiem", { cp ->
+                val ct = cp.doFinal(String(pw).toByteArray())
+                File(a.filesDir, BIO).writeBytes(cp.iv + ct)
+                done()
+            }, fail)
+        } catch (e: Exception) { bioDisable(a); fail("Odcisk: ${e.message}") }
+    }
+
+    fun bioUnlock(a: FragmentActivity, ok: (CharArray) -> Unit, fail: (String) -> Unit) {
+        try {
+            val raw = File(a.filesDir, BIO).readBytes()
+            val c = Cipher.getInstance("AES/GCM/NoPadding")
+                .apply { init(Cipher.DECRYPT_MODE, bioKey(), GCMParameterSpec(128, raw.copyOfRange(0, 12))) }
+            bioAuth(a, c, "Odblokuj VaultHD", { cp ->
+                ok(String(cp.doFinal(raw.copyOfRange(12, raw.size))).toCharArray())
+            }, fail)
+        } catch (e: KeyPermanentlyInvalidatedException) {
+            bioDisable(a); fail("Zmieniono odciski w telefonie - wpisz hasło")
+        } catch (e: Exception) { fail("Odcisk: ${e.message}") }
     }
 
     fun save(a: FragmentActivity, mn: String, pass: String, addrs: List<String>, pw: CharArray,

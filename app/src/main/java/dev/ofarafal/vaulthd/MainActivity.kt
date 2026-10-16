@@ -126,16 +126,39 @@ fun App(act: FragmentActivity) {
     var confirmWipe by remember { mutableStateOf(false) }
     var confirmDisguise by remember { mutableStateOf(false) }
     var disguised by remember { mutableStateOf(isDisguised(act)) }
+    var menu by remember { mutableStateOf(false) }
+    var askBio by remember { mutableStateOf(false) }
+    var bioOn by remember { mutableStateOf(Vault.bioEnabled(act)) }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("VaultHD", fontSize = 26.sp, fontWeight = FontWeight.Bold)
             Text("  EVM", color = Accent, fontSize = 12.sp)
             if (has) {
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = { confirmDisguise = true }) { Text(if (disguised) "Pokaż ikonę" else "Ukryj ikonę", color = Muted, fontSize = 12.sp) }
-                TextButton(onClick = { confirmWipe = true }) { Text("Zmień seed", color = Muted, fontSize = 12.sp) }
+                Box {
+                    TextButton(onClick = { menu = true }) { Text("⋮", color = Muted, fontSize = 22.sp) }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        if (Session.unlocked && Vault.bioAvailable(act)) DropdownMenuItem(
+                            text = { Text(if (bioOn) "Wyłącz odblokowanie odciskiem" else "Włącz odblokowanie odciskiem") },
+                            onClick = {
+                                menu = false
+                                if (bioOn) { Vault.bioDisable(act); bioOn = false; msg = "Odblokowanie odciskiem wyłączone" } else askBio = true
+                            })
+                        DropdownMenuItem(text = { Text(if (disguised) "Pokaż ikonę VaultHD" else "Ukryj ikonę") },
+                            onClick = { menu = false; confirmDisguise = true })
+                        DropdownMenuItem(text = { Text("Zmień seed") }, onClick = { menu = false; confirmWipe = true })
+                    }
+                }
             }
         }
+        if (askBio) AlertDialog(onDismissRequest = { askBio = false; Vault.markBioAsked(act) },
+            title = { Text("Odblokowanie odciskiem?") },
+            text = { Text("Odcisk palca odblokuje aplikację zamiast hasła. Hasło nadal będzie potrzebne po zmianie odcisków w telefonie. Uwaga: przy włączonym odcisku hasło jest chronione tylko kluczem w sprzęcie telefonu. Każdy przelew nadal wymaga potwierdzenia.") },
+            confirmButton = { Button(onClick = {
+                askBio = false; Vault.markBioAsked(act)
+                Vault.bioEnroll(act, Session.pw ?: CharArray(0), { bioOn = true; msg = "Odblokowanie odciskiem włączone" }, { msg = it })
+            }) { Text("Włącz") } },
+            dismissButton = { TextButton(onClick = { askBio = false; Vault.markBioAsked(act) }) { Text("Nie teraz") } })
         if (confirmDisguise) AlertDialog(onDismissRequest = { confirmDisguise = false },
             title = { Text(if (disguised) "Pokazać ikonę VaultHD?" else "Ukryć aplikację?") },
             text = { Text(if (disguised) "W launcherze znów pojawi się ikona VaultHD." else "W launcherze aplikacja będzie wyglądać jak „Notatnik” (inna ikona i nazwa). Zmiana może chwilowo zamknąć apkę - uruchom ją ponownie z ikony Notatnika.") },
@@ -145,7 +168,7 @@ fun App(act: FragmentActivity) {
             title = { Text("Usunąć portfel z tego telefonu?") },
             text = { Text("Zaszyfrowany seed zostanie skasowany. Bez zapisanego seeda (12 słów) stracisz dostęp do środków. Potem wkleisz własny seed lub wygenerujesz nowy.") },
             confirmButton = { Button(onClick = {
-                Vault.wipe(act); Session.lock(); has = false; addrs = emptyList(); confirmWipe = false; msg = ""
+                Vault.wipe(act); Session.lock(); bioOn = false; has = false; addrs = emptyList(); confirmWipe = false; msg = ""
             }) { Text("Usuń") } },
             dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("Anuluj") } })
         if (msg.isNotEmpty()) {
@@ -155,8 +178,9 @@ fun App(act: FragmentActivity) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        if (!has) Setup(act, { c -> Session.pw = c; Session.unlocked = true; has = true; addrs = Vault.addresses(act); msg = "" }, { msg = it })
-        else if (!Session.unlocked) LockScreen(act, { c -> Session.pw = c; Session.unlocked = true; msg = "" }, { msg = it })
+        if (!has) Setup(act, { c -> Session.pw = c; Session.unlocked = true; has = true; addrs = Vault.addresses(act); msg = ""; askBio = Vault.bioAvailable(act) && !Vault.bioAsked(act) }, { msg = it })
+        else if (!Session.unlocked) LockScreen(act, { c, viaBio -> Session.pw = c; Session.unlocked = true; msg = ""
+            if (!viaBio) askBio = Vault.bioAvailable(act) && !Vault.bioAsked(act) && !Vault.bioEnabled(act) }, { msg = it })
         else Main(act, addrs) { msg = it }
     }
 }
@@ -234,15 +258,19 @@ fun Setup(act: FragmentActivity, onDone: (CharArray) -> Unit, say: (String) -> U
 }
 
 @Composable
-fun LockScreen(act: FragmentActivity, onUnlock: (CharArray) -> Unit, say: (String) -> Unit) {
+fun LockScreen(act: FragmentActivity, onUnlock: (CharArray, Boolean) -> Unit, say: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     var pw by remember { mutableStateOf("") }
     var wait by remember { mutableLongStateOf(Vault.waitMs(act)) }
     var busy by remember { mutableStateOf(false) }
+    val bio = Vault.bioEnabled(act)
+    fun tryBio() { Vault.bioUnlock(act, { c -> onUnlock(c, true) }, { say(it) }) }
+    LaunchedEffect(Unit) { if (bio) { delay(400); tryBio() } }
     LaunchedEffect(wait) { if (wait > 0) { delay(1000); wait = Vault.waitMs(act) } }
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = CardBg)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Odblokuj portfel", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            if (bio) Button(onClick = { tryBio() }, Modifier.fillMaxWidth()) { Text("Odblokuj odciskiem") }
             OutlinedTextField(pw, { pw = it }, Modifier.fillMaxWidth(), label = { Text("Hasło") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrect = false),
                 visualTransformation = PasswordVisualTransformation())
@@ -252,11 +280,11 @@ fun LockScreen(act: FragmentActivity, onUnlock: (CharArray) -> Unit, say: (Strin
                     busy = true
                     val chars = pw.toCharArray()
                     val ok = withContext(Dispatchers.IO) { Vault.verify(act, chars) }
-                    if (ok) { Vault.clearFails(act); pw = ""; onUnlock(chars) }
+                    if (ok) { Vault.clearFails(act); pw = ""; onUnlock(chars, false) }
                     else { Vault.registerFail(act); wait = Vault.waitMs(act); chars.fill('\u0000'); pw = ""; say("Złe hasło") }
                     busy = false
                 }
-            }) { Text(if (busy) "Sprawdzam…" else "Odblokuj") }
+            }) { Text(if (busy) "Sprawdzam…" else "Odblokuj hasłem") }
         }
     }
 }
@@ -264,7 +292,7 @@ fun LockScreen(act: FragmentActivity, onUnlock: (CharArray) -> Unit, say: (Strin
 @Composable
 fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
     val scope = rememberCoroutineScope()
-    var test by remember { mutableStateOf(true) }
+    val test = false
     var ni by remember { mutableIntStateOf(0) }
     var tokVer by remember { mutableIntStateOf(0) }
     val nets = remember(test) { NETS.filter { it.testnet == test } }
@@ -360,19 +388,8 @@ fun Main(act: FragmentActivity, addrs: List<String>, say: (String) -> Unit) {
     val total = if (prices.isEmpty()) null else addrs.sumOf { addrUsd(it) ?: 0.0 }
 
     Column(Modifier.fillMaxSize()) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = test, onClick = { test = true; ni = 0 }, label = { Text("Testnet") })
-            FilterChip(selected = !test, onClick = { test = false; ni = 0 }, label = { Text("Mainnet") })
-        }
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             nets.forEachIndexed { i, n -> FilterChip(selected = net == n, onClick = { ni = i }, label = { Text(n.name) }) }
-        }
-        if (!test) {
-            Card(Modifier.fillMaxWidth().padding(top = 6.dp), shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF3B1218))) {
-                Text("MAINNET - prawdziwe środki. Zaczynaj od małych kwot.", Modifier.padding(10.dp),
-                    color = Color(0xFFF87171), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            }
         }
         Spacer(Modifier.height(8.dp))
         Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = CardBg)) {

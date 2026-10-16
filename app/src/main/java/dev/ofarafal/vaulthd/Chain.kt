@@ -23,16 +23,6 @@ data class SweepItem(val idx: Int, val amount: BigInteger, val gas: BigInteger, 
 
 // Publiczne RPC (publicnode) - jeśli któryś nie działa, podmień na własny.
 val NETS = listOf(
-    Net("Sepolia", 11155111, "https://ethereum-sepolia-rpc.publicnode.com", "ETH", true,
-        "https://eth-sepolia.blockscout.com", "https://eth-sepolia.blockscout.com", null, null),
-    Net("Base Sepolia", 84532, "https://base-sepolia-rpc.publicnode.com", "ETH", true,
-        "https://base-sepolia.blockscout.com", "https://base-sepolia.blockscout.com", null, null),
-    Net("Arbitrum Sepolia", 421614, "https://arbitrum-sepolia-rpc.publicnode.com", "ETH", true,
-        "https://arbitrum-sepolia.blockscout.com", "https://arbitrum-sepolia.blockscout.com", null, null),
-    Net("Polygon Amoy", 80002, "https://polygon-amoy-bor-rpc.publicnode.com", "POL", true,
-        "https://amoy.polygonscan.com", null, null, null),
-    Net("BSC Testnet", 97, "https://bsc-testnet-rpc.publicnode.com", "tBNB", true,
-        "https://testnet.bscscan.com", null, null, null),
     Net("Ethereum", 1, "https://ethereum-rpc.publicnode.com", "ETH", false,
         "https://eth.blockscout.com", "https://eth.blockscout.com", "ethereum", "ethereum"),
     Net("Polygon", 137, "https://polygon-bor-rpc.publicnode.com", "POL", false,
