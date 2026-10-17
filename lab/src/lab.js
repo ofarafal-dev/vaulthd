@@ -1,19 +1,38 @@
 import {
   startRailgunEngine, loadProvider, createRailgunWallet, loadWalletByID, getProver, refreshBalances,
   setOnBalanceUpdateCallback, setOnUTXOMerkletreeScanCallback, setOnTXIDMerkletreeScanCallback, ArtifactStore,
+  populateShieldBaseToken, gasEstimateForShieldBaseToken, getShieldPrivateKeySignatureMessage,
+  generateUnshieldBaseTokenProof, populateProvedUnshieldBaseToken, gasEstimateForUnprovenUnshieldBaseToken,
 } from '@railgun-community/wallet';
-import { NetworkName, NETWORK_CONFIG } from '@railgun-community/shared-models';
+import { NetworkName, NETWORK_CONFIG, TXIDVersion, EVMGasType } from '@railgun-community/shared-models';
 import LevelDB from 'level-js';
 import localforage from 'localforage';
 import { groth16 } from 'snarkjs';
-import { Mnemonic, randomBytes, hexlify } from 'ethers';
+import { Mnemonic, randomBytes, hexlify, HDNodeWallet, JsonRpcProvider, keccak256, parseEther, formatEther } from 'ethers';
 
 const NET = NetworkName.EthereumSepolia;
 const RPC = 'https://ethereum-sepolia-rpc.publicnode.com';
 const POI_NODES = ['https://ppoi.fdi.network']; // publiczny węzeł agregatora POI z dokumentacji Railgun
 const $ = (id) => document.getElementById(id);
 const js = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
-let ready = false, walletId = null;
+const TXID = TXIDVersion.V2_PoseidonMerkle;
+const WETH = NETWORK_CONFIG[NET].baseToken.wrappedAddress;
+let ready = false, walletId = null, rgAddr = null, provider = null, pub = null;
+const secs = (t0) => ((performance.now() - t0) / 1000).toFixed(1);
+
+function getPub() {
+  if (pub) return pub;
+  const mn = localStorage.getItem('lab_mn');
+  if (!mn) throw new Error('Najpierw utwórz portfel (krok 2)');
+  provider = new JsonRpcProvider(RPC, 11155111);
+  pub = HDNodeWallet.fromPhrase(mn, undefined, "m/44'/60'/0'/0/0").connect(provider);
+  return pub;
+}
+async function showPublic() {
+  const w = getPub();
+  const bal = await provider.getBalance(w.address);
+  log('Adres publiczny Sepolia (0x): ' + w.address + '\nSaldo: ' + formatEther(bal) + ' ETH (potrzebny faucet Sepolii, np. 0.05 ETH)');
+}
 
 function log(m) {
   const t = new Date().toISOString().slice(11, 19);
@@ -48,7 +67,10 @@ async function init() {
   getProver().setSnarkJSGroth16(groth16);
   setOnUTXOMerkletreeScanCallback((d) => log('Skan UTXO: ' + js(d)));
   setOnTXIDMerkletreeScanCallback((d) => log('Skan TXID: ' + js(d)));
-  setOnBalanceUpdateCallback((b) => log('Aktualizacja sald: ' + js(b)));
+  setOnBalanceUpdateCallback((b) => {
+    const parts = (b.erc20Amounts || []).map((a) => a.tokenAddress.slice(0, 8) + '…=' + formatEther(a.amount));
+    if (parts.length) log('Saldo prywatne [' + b.balanceBucket + ']: ' + parts.join(', '));
+  });
   ready = true;
   log(`Gotowe w ${((performance.now() - t0) / 1000).toFixed(1)} s${mem()}`);
 }
@@ -61,7 +83,9 @@ async function makeWallet() {
   if (wid) {
     const info = await loadWalletByID(key, wid, false);
     walletId = info.id;
-    return log('Wczytano portfel. Adres 0zk: ' + info.railgunAddress);
+    log('Wczytano portfel. Adres 0zk: ' + info.railgunAddress);
+    rgAddr = info.railgunAddress;
+    return showPublic();
   }
   let mn = localStorage.getItem('lab_mn');
   if (!mn) {
@@ -74,6 +98,8 @@ async function makeWallet() {
   walletId = info.id;
   localStorage.setItem('lab_wid', info.id);
   log('Utworzono portfel od bloku ' + block + '. Adres 0zk: ' + info.railgunAddress);
+  rgAddr = info.railgunAddress;
+  await showPublic();
 }
 
 async function scan() {
@@ -86,6 +112,55 @@ async function scan() {
 }
 
 function wrap(fn) { return async () => { try { await fn(); } catch (e) { log('BŁĄD: ' + (e && e.message ? e.message : e)); } }; }
+async function shield() {
+  if (!ready || !walletId || !rgAddr) return log('Najpierw kroki 1 i 2');
+  const w = getPub();
+  const amount = parseEther($('amt').value || '0.01');
+  const bal = await provider.getBalance(w.address);
+  if (bal < amount) return log('Za mało Sepolia ETH na ' + w.address + ' (saldo ' + formatEther(bal) + ')');
+  log('Wpłata do puli Railgun: ' + formatEther(amount) + ' ETH…');
+  const shieldPrivateKey = keccak256(await w.signMessage(getShieldPrivateKeySignatureMessage()));
+  const wrapped = { tokenAddress: WETH, amount };
+  const est = await gasEstimateForShieldBaseToken(TXID, NET, rgAddr, shieldPrivateKey, wrapped, w.address);
+  const fee = await provider.getFeeData();
+  const gasDetails = { evmGasType: EVMGasType.Type2, gasEstimate: est.gasEstimate,
+    maxFeePerGas: fee.maxFeePerGas, maxPriorityFeePerGas: fee.maxPriorityFeePerGas };
+  const { transaction } = await populateShieldBaseToken(TXID, NET, rgAddr, shieldPrivateKey, wrapped, gasDetails);
+  transaction.from = w.address;
+  const sent = await w.sendTransaction(transaction);
+  log('Wysłano tx: ' + sent.hash + ' - czekam na potwierdzenie…');
+  await sent.wait();
+  log('Potwierdzone. Skanuj salda (krok 3). Środki staną się wydawalne po weryfikacji POI (status ShieldPending → Spendable).');
+}
+
+async function unshield() {
+  if (!ready || !walletId) return log('Najpierw kroki 1 i 2');
+  const w = getPub();
+  const key = localStorage.getItem('lab_key');
+  const amount = parseEther($('amt').value || '0.005');
+  const wrapped = { tokenAddress: WETH, amount };
+  const fee = await provider.getFeeData();
+  const gd0 = { evmGasType: EVMGasType.Type2, gasEstimate: 0n,
+    maxFeePerGas: fee.maxFeePerGas, maxPriorityFeePerGas: fee.maxPriorityFeePerGas };
+  log('Wypłata ' + formatEther(amount) + ' ETH z puli na ' + w.address + ' - szacowanie gazu…');
+  let t = performance.now();
+  const est = await gasEstimateForUnprovenUnshieldBaseToken(TXID, NET, w.address, walletId, key, wrapped, gd0, undefined, true);
+  log('Szacowanie gotowe w ' + secs(t) + ' s' + mem());
+  t = performance.now();
+  let last = -1;
+  await generateUnshieldBaseTokenProof(TXID, NET, w.address, walletId, key, wrapped, undefined, true, undefined, (p) => {
+    const pc = Math.floor(p * 10); if (pc !== last) { last = pc; log('Dowód: ' + Math.round(p * 100) + '%'); }
+  });
+  log('DOWÓD ZERO-KNOWLEDGE wygenerowany w ' + secs(t) + ' s' + mem());
+  const gd = { ...gd0, gasEstimate: est.gasEstimate };
+  const { transaction } = await populateProvedUnshieldBaseToken(TXID, NET, w.address, walletId, wrapped, undefined, true, undefined, gd);
+  transaction.from = w.address;
+  const sent = await w.sendTransaction(transaction);
+  log('Wysłano tx: ' + sent.hash + ' - czekam na potwierdzenie…');
+  await sent.wait();
+  log('Wypłata potwierdzona. Sprawdź saldo 0x w kroku 2.');
+}
+
 function copyLog() {
   const text = $('log').textContent;
   const done = () => log('Skopiowano dziennik do schowka');
@@ -101,6 +176,8 @@ function fallbackCopy(text, done) {
 }
 window.addEventListener('DOMContentLoaded', () => {
   $('b4').onclick = copyLog;
+  $('b5').onclick = wrap(shield);
+  $('b6').onclick = wrap(unshield);
   $('b1').onclick = wrap(init);
   $('b2').onclick = wrap(makeWallet);
   $('b3').onclick = wrap(scan);
