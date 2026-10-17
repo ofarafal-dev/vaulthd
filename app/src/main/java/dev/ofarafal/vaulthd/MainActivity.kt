@@ -127,6 +127,7 @@ fun App(act: FragmentActivity) {
     var askBio by remember { mutableStateOf(false) }
     var bioOn by remember { mutableStateOf(Vault.bioEnabled(act)) }
     var tab by remember { mutableIntStateOf(0) }
+    var lab by remember { mutableStateOf(false) }
     val ready = has && Session.unlocked
     Column(Modifier.fillMaxSize().padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -167,14 +168,15 @@ fun App(act: FragmentActivity) {
                 // Portfel zostaje w kompozycji (stan i salda nie giną przy zmianie zakładki)
                 Box(if (tab == 0) Modifier.fillMaxSize() else Modifier.size(0.dp)) { Main(act, addrs) { msg = it } }
                 if (tab == 1) ActivityScreen(act, addrs)
-                if (tab == 2) SettingsScreen(act, addrs, bioOn,
+                if (lab) LabScreen(act) { lab = false }
+                if (tab == 2 && !lab) SettingsScreen(act, addrs, bioOn,
                     { on -> if (on) askBio = true else { Vault.bioDisable(act); bioOn = false; msg = "Odblokowanie odciskiem wyłączone" } },
                     { bioOn = false },
                     { Vault.wipe(act); Session.lock(); bioOn = false; has = false; addrs = emptyList(); msg = ""; tab = 0 },
-                    { tab = 0; Shared.openAdd = true }, { msg = it })
+                    { tab = 0; Shared.openAdd = true }, { lab = true }, { msg = it })
             }
         }
-        if (ready) BottomNav(tab) { tab = it }
+        if (ready) BottomNav(tab) { tab = it; lab = false }
     }
 }
 

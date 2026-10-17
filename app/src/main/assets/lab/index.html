@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="pl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Laboratorium Railgun</title>
+<style>
+ body{margin:0;padding:12px;background:#0B0D10;color:#EDF1F5;font-family:system-ui,sans-serif}
+ .warn{font-size:12px;color:#FF6B6B;margin:0 0 10px}
+ button{background:#FF8A3D;color:#1A0E05;border:0;border-radius:12px;padding:10px 14px;font-size:14px;margin:0 6px 8px 0}
+ pre{background:#14181D;border-radius:12px;padding:10px;font-size:11px;white-space:pre-wrap;word-break:break-all;height:60vh;overflow:auto}
+</style></head>
+<body>
+<p class="warn">Tylko testnet Sepolia. Seed laboratorium jest zapisany w pamięci WebView, nie używaj tu prawdziwych środków.</p>
+<button id="b1">1. Start silnika</button><button id="b2">2. Portfel 0zk</button><button id="b3">3. Skanuj salda</button>
+<pre id="log"></pre>
+<script>window.addEventListener('error',function(e){document.getElementById('log').textContent+='BŁĄD ładowania: '+e.message+'\n'});</script>
+<script src="lab.js" defer></script>
+</body></html>

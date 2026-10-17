@@ -11,6 +11,24 @@ jobs:
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: 8.7 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Build Railgun lab bundle
+        run: |
+          set +e
+          cd lab
+          (npm ci --no-audit --no-fund && node build.mjs) > ../lab.log 2>&1
+          code=$?
+          cd ..
+          if [ $code -ne 0 ]; then
+            msg=$(tail -25 lab.log | cut -c1-240)
+            msg="${msg//$'\n'/%0A}"
+            echo "::error title=LAB_ERRORS::$msg"
+            exit $code
+          fi
+          mkdir -p app/src/main/assets/lab
+          cp lab/dist/lab.js app/src/main/assets/lab/lab.js
+          ls -la app/src/main/assets/lab
       - name: Build
         run: |
           set +e

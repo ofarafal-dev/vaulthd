@@ -141,7 +141,7 @@ fun ChangePwDialog(act: FragmentActivity, onBioOff: () -> Unit, onClose: () -> U
 
 @Composable
 fun SettingsScreen(act: FragmentActivity, addrs: List<String>, bioOn: Boolean, onBio: (Boolean) -> Unit,
-                   onBioOff: () -> Unit, onWipe: () -> Unit, openTokens: () -> Unit, say: (String) -> Unit) {
+                   onBioOff: () -> Unit, onWipe: () -> Unit, openTokens: () -> Unit, openLab: () -> Unit, say: (String) -> Unit) {
     var dlg by remember { mutableStateOf("") }
     var disguised by remember { mutableStateOf(isDisguised(act)) }
     val lockOpts = listOf(15, 30, 60, 300); val lockLbl = listOf("15 s", "30 s", "1 min", "5 min")
@@ -187,6 +187,8 @@ fun SettingsScreen(act: FragmentActivity, addrs: List<String>, bioOn: Boolean, o
             }
             SRow("O aplikacji", value = ver, chevron = true, last = true) { dlg = "about" }
         }
+        Section("Eksperymenty")
+        Group { SRow("Laboratorium Railgun (testnet)", chevron = true, last = true) { openLab() } }
         Spacer(Modifier.height(12.dp))
         Group { SRow("Usuń portfel z telefonu", danger = true, last = true) { dlg = "wipe" } }
     }

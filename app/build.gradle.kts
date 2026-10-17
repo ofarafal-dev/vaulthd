@@ -20,4 +20,5 @@ dependencies {
     implementation("androidx.fragment:fragment-ktx:1.8.0")
     implementation("org.web3j:core:4.12.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    implementation("androidx.webkit:webkit:1.11.0")
 }
