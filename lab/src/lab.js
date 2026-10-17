@@ -88,16 +88,25 @@ async function makeWallet() {
     return showPublic();
   }
   let mn = localStorage.getItem('lab_mn');
+  let imported = false;
   if (!mn) {
-    mn = Mnemonic.fromEntropy(randomBytes(16)).phrase;
-    localStorage.setItem('lab_mn', mn);
-    log('Wygenerowano seed laboratorium (tylko testnet): ' + mn);
+    const imp = ($('seed').value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    if (imp) {
+      if (!Mnemonic.isValidMnemonic(imp)) throw new Error('Nieprawidłowy seed laboratorium');
+      mn = imp; imported = true;
+      localStorage.setItem('lab_mn', mn);
+      log('Zaimportowano seed laboratorium (skan od początku sieci, może potrwać dłużej)');
+    } else {
+      mn = Mnemonic.fromEntropy(randomBytes(16)).phrase;
+      localStorage.setItem('lab_mn', mn);
+      log('Wygenerowano seed laboratorium (tylko testnet): ' + mn);
+    }
   }
-  const block = await rpcBlock();
-  const info = await createRailgunWallet(key, mn, { [NET]: block });
+  const block = imported ? undefined : await rpcBlock();
+  const info = await createRailgunWallet(key, mn, imported ? undefined : { [NET]: block });
   walletId = info.id;
   localStorage.setItem('lab_wid', info.id);
-  log('Utworzono portfel od bloku ' + block + '. Adres 0zk: ' + info.railgunAddress);
+  log('Utworzono portfel od bloku ' + (block === undefined ? 'początku sieci' : block) + '. Adres 0zk: ' + info.railgunAddress);
   rgAddr = info.railgunAddress;
   await showPublic();
 }
