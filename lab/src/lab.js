@@ -10,6 +10,7 @@ import { Mnemonic, randomBytes, hexlify } from 'ethers';
 
 const NET = NetworkName.EthereumSepolia;
 const RPC = 'https://ethereum-sepolia-rpc.publicnode.com';
+const POI_NODES = ['https://ppoi.fdi.network']; // publiczny węzeł agregatora POI z dokumentacji Railgun
 const $ = (id) => document.getElementById(id);
 const js = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let ready = false, walletId = null;
@@ -39,7 +40,7 @@ async function init() {
     async (p) => localforage.getItem(p),
     async (dir, p, item) => { await localforage.setItem(p, item); },
     async (p) => (await localforage.getItem(p)) != null);
-  await startRailgunEngine('vaultlab', new LevelDB('railgun-engine-db'), false, store, false, false);
+  await startRailgunEngine('vaultlab', new LevelDB('railgun-engine-db'), false, store, false, false, POI_NODES);
   log('Silnik wystartował');
   const cfg = { chainId: 11155111, providers: [{ provider: RPC, priority: 1, weight: 2 }] };
   const res = await loadProvider(cfg, NET, 15000);
@@ -85,7 +86,21 @@ async function scan() {
 }
 
 function wrap(fn) { return async () => { try { await fn(); } catch (e) { log('BŁĄD: ' + (e && e.message ? e.message : e)); } }; }
+function copyLog() {
+  const text = $('log').textContent;
+  const done = () => log('Skopiowano dziennik do schowka');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+  } else fallbackCopy(text, done);
+}
+function fallbackCopy(text, done) {
+  const t = document.createElement('textarea');
+  t.value = text; document.body.appendChild(t); t.select();
+  try { document.execCommand('copy'); done(); } catch (e) { log('Nie udało się skopiować: ' + e.message); }
+  document.body.removeChild(t);
+}
 window.addEventListener('DOMContentLoaded', () => {
+  $('b4').onclick = copyLog;
   $('b1').onclick = wrap(init);
   $('b2').onclick = wrap(makeWallet);
   $('b3').onclick = wrap(scan);
